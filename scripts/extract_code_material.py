@@ -105,14 +105,14 @@ def load_selected_files(project: Path, selection_path: Path | None) -> list[dict
     if selection_path is None:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 代码抽取必须先使用 propose_code_selection.py 生成并确认 草稿/代码文件选择.json。"
+            "NEXT_ACTION: 代码抽取须先经 propose_code_selection.py 生成并确认 草稿/代码文件选择.json。"
         )
 
     data = read_json(selection_path)
     if isinstance(data, dict) and data.get("selection_required") and not data.get("user_confirmed"):
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 代码文件选择尚未确认。请先确认或修改 草稿/代码文件选择.json，"
+            "NEXT_ACTION: 代码文件选择尚未确认。须先确认或修改 草稿/代码文件选择.json，"
             "再运行 `python3 <SKILL_DIR>/scripts/confirm_stage.py --workdir 软件著作权申请资料 --stage code-selection --note \"<用户确认内容>\"`。"
         )
     items = data.get("files") if isinstance(data, dict) else data
@@ -262,8 +262,8 @@ def extract(project: Path, out_dir: Path, software_name: str, version: str, line
     if total_pages < SPLIT_THRESHOLD_PAGES and available_pages >= SPLIT_THRESHOLD_PAGES and unselected_count > 0:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            f"NEXT_ACTION: 当前已选代码只有 {total_pages} 页，但候选源码足够补齐到 {SPLIT_THRESHOLD_PAGES} 页。"
-            "请在 草稿/代码文件选择.json 中继续选择补充文件，重新记录 code-selection 门禁后再抽取。"
+            f"NEXT_ACTION: 当前已选代码仅 {total_pages} 页，而候选源码足以补齐至 {SPLIT_THRESHOLD_PAGES} 页。"
+            "须在 草稿/代码文件选择.json 中继续选择补充文件，重新记录 code-selection 门禁后再行抽取。"
         )
     outputs: list[str] = []
 
@@ -279,7 +279,7 @@ def extract(project: Path, out_dir: Path, software_name: str, version: str, line
         combined_path = out_dir / "代码-前后各30页.md"
         write_pages_md(
             combined_path,
-            f"代码材料（前{len(front)}页+后{len(back)}页，共{rendered_pages}页，按完整文件边界对齐，避免截断函数/方法）",
+            f"代码材料（前 {len(front)} 页与后 {len(back)} 页，共 {rendered_pages} 页，按完整文件边界对齐，不截断函数与方法）",
             software_name,
             version,
             front + back,
@@ -293,9 +293,9 @@ def extract(project: Path, out_dir: Path, software_name: str, version: str, line
         outputs.append(all_path.name)
         mode = "all_under_60_pages"
     supplement_status = (
-        "候选源码可达到前30页/后30页要求"
+        "候选源码可满足前 30 页与后 30 页的要求"
         if available_pages >= SPLIT_THRESHOLD_PAGES
-        else "候选源码不足60页，按全部代码材料生成"
+        else "候选源码不足 60 页，按全部代码材料生成"
     )
 
     manifest = {

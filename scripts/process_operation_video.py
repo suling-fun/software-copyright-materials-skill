@@ -192,7 +192,7 @@ def extract_frames(video: Path, out_dir: Path, scene_threshold: float, max_frame
     if duration <= 0:
         print(
             "WARNING: 未能探测到视频时长（ffprobe 返回空结果），无法保证按时间均匀取样覆盖整段视频，"
-            "只能退化为对开头单帧抽取；如果视频文件名以 `-` 开头，请重命名后重试。"
+            "仅能退化为对开头抽取单帧。若视频文件名以 `-` 开头，须重命名后重试。"
         )
     periodic = periodic_timestamps(duration, max_frames)
     scene = scene_change_timestamps(video, scene_threshold)
@@ -207,7 +207,7 @@ def extract_frames(video: Path, out_dir: Path, scene_threshold: float, max_frame
         if effective_interval > 10:
             print(
                 f"NOTE: 视频时长 {duration:.0f} 秒，按当前 --max-frames={max_frames} 计算的取样间隔约为 "
-                f"{effective_interval:.1f} 秒，覆盖粒度较粗，密集的操作步骤可能采不到；建议调大 --max-frames。"
+                f"{effective_interval:.1f} 秒，覆盖粒度较粗，密集的操作步骤可能无法采集。建议增大 --max-frames。"
             )
 
     frames: list[dict[str, Any]] = []
@@ -235,12 +235,12 @@ def extract_frames(video: Path, out_dir: Path, scene_threshold: float, max_frame
         detail = "\n".join(failures[:5])
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 视频抽帧全部失败，请确认视频文件是否损坏、格式是否受 ffmpeg 支持，"
-            "或改用 Chrome DevTools MCP / Codex Computer Use / 用户自行截图三种方式之一。\n"
+            "NEXT_ACTION: 视频抽帧全部失败。须确认视频文件是否损坏、格式是否受 ffmpeg 支持，"
+            "或改用 Chrome DevTools MCP、Codex Computer Use、用户自行截图三种方式之一。\n"
             f"失败详情（节选）：\n{detail}"
         )
     if failures:
-        print(f"WARNING: {len(failures)}/{len(timestamps)} 个目标时间点抽帧失败，已跳过，其余帧仍可用。")
+        print(f"WARNING: {len(failures)}/{len(timestamps)} 个目标时间点抽帧失败，已跳过，其余帧仍可使用。")
         print(f"失败详情（节选）：{failures[0]}")
 
     return frames
@@ -276,7 +276,7 @@ def write_evidence(out_dir: Path, video: Path, frames_dir_name: str, frames: lis
         f"- 视频来源：`{video.name}`",
         f"- 抽取帧数：{len(entries)}",
         "",
-        "逐帧列出时间戳和图片路径。请用当前环境可用的图片查看能力逐张检查画面，判断当时在操作什么、界面上有什么，据此撰写业务理解的典型操作流程和操作手册的操作步骤，不要凭空猜测视频里没有出现的内容。",
+        "以下逐帧列出时间戳与图片路径。须以当前环境可用的图片查看能力逐张检查画面，判断该时刻所执行的操作与界面上呈现的内容，据此撰写业务理解的典型操作流程与操作手册的操作步骤。不得臆测视频中未出现的内容。",
         "",
     ]
     for entry in entries:
@@ -311,9 +311,9 @@ def main() -> None:
     if not have_ffmpeg():
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 未检测到 ffmpeg/ffprobe，无法处理操作视频。请安装后重试"
+            "NEXT_ACTION: 未检测到 ffmpeg/ffprobe，无法处理操作视频。须安装后重试"
             "（macOS: brew install ffmpeg；Ubuntu/Debian: apt install ffmpeg），"
-            "或改用 Chrome DevTools MCP / Codex Computer Use / 用户自行截图三种方式之一。"
+            "或改用 Chrome DevTools MCP、Codex Computer Use、用户自行截图三种方式之一。"
         )
 
     out_dir = ensure_dir(Path(args.out_dir))

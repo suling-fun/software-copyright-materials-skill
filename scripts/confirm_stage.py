@@ -14,6 +14,19 @@ from common import read_json, write_json
 MAIN_FUNCTION_MIN_CHARS = 500
 MAIN_FUNCTION_MAX_CHARS = 1300
 
+SCREENSHOT_METHODS = ["video", "browser-automation", "desktop-automation", "user-supplied", "skip"]
+
+LEGACY_SCREENSHOT_METHODS = {
+    "chrome-devtools": "browser-automation",
+    "computer-use": "desktop-automation",
+}
+
+
+def screenshot_method_arg(value: str) -> str:
+    """Accept the retired spellings on the command line and map them to current values."""
+    text = str(value or "").strip().lower()
+    return LEGACY_SCREENSHOT_METHODS.get(text, text)
+
 
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -57,16 +70,16 @@ def application_field_issues(md_path: Path) -> list[str]:
 
     main_function = application_field_value(md_path, "软件的主要功能")
     if not main_function:
-        issues.append("➤软件的主要功能：缺少填写内容，请填写 500~1300 字。")
+        issues.append("➤软件的主要功能：缺少填写内容，须填写 500 至 1300 字。")
     elif "待用户确认" not in main_function:
         count = effective_len(main_function)
         if count < MAIN_FUNCTION_MIN_CHARS:
             issues.append(
-                f"➤软件的主要功能：当前 {count} 字，少于 {MAIN_FUNCTION_MIN_CHARS} 字，请扩写至 500~1300 字。"
+                f"➤软件的主要功能：当前 {count} 字，少于 {MAIN_FUNCTION_MIN_CHARS} 字，须扩写至 500 至 1300 字。"
             )
         elif count > MAIN_FUNCTION_MAX_CHARS:
             issues.append(
-                f"➤软件的主要功能：当前 {count} 字，超过 {MAIN_FUNCTION_MAX_CHARS} 字，请精简至 500~1300 字。"
+                f"➤软件的主要功能：当前 {count} 字，超过 {MAIN_FUNCTION_MAX_CHARS} 字，须精简至 500 至 1300 字。"
             )
     return issues
 
@@ -104,13 +117,13 @@ def confirm_code_selection(workdir: Path, note: str) -> Path:
     if not selected:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 代码文件选择尚未由模型填写。请先选择至少一个源码文件并填写选择理由，再让用户确认。"
+            "NEXT_ACTION: 代码文件选择尚未由模型填写。须先选定至少一个源码文件并填写选择理由，再交由用户确认。"
         )
     missing_reason = [item.get("path") for item in selected if not str(item.get("model_reason") or "").strip()]
     if data.get("model_selection_required") and missing_reason:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 已选源码缺少模型选择理由，请补全 `model_reason` 后再确认。\n"
+            "NEXT_ACTION: 已选源码缺少模型选择理由。须补全 `model_reason` 后方可确认。\n"
             + "\n".join(f"- {item}" for item in missing_reason[:20])
         )
     write_confirmation(path, data, "user_confirmed", note)
@@ -118,20 +131,25 @@ def confirm_code_selection(workdir: Path, note: str) -> Path:
 
 
 def parse_screenshot_method(method: str, note: str) -> str:
+    """Map any accepted spelling to the current values.
+
+    旧取值 chrome-devtools 与 computer-use 仍予识别，分别对应
+    browser-automation 与 desktop-automation，以兼容已生成的 截图方式确认.json。
+    """
     value = (method or note or "").lower()
     if any(key in value for key in ("skip", "no-screenshot", "none", "不截图", "跳过", "暂不", "先不", "不要截图", "无需截图")):
         return "skip"
     if any(key in value for key in ("video", "视频", "录屏", "录像")):
         return "video"
-    if any(key in value for key in ("chrome", "devtools", "mcp")):
-        return "chrome-devtools"
-    if any(key in value for key in ("computer", "use", "电脑", "桌面")):
-        return "computer-use"
+    if any(key in value for key in ("browser", "chrome", "devtools", "mcp", "浏览器")):
+        return "browser-automation"
+    if any(key in value for key in ("desktop", "computer", "电脑", "桌面")):
+        return "desktop-automation"
     if any(key in value for key in ("user", "manual", "self", "手动", "自己", "用户")):
         return "user-supplied"
     raise SystemExit(
         "STOP_FOR_USER\n"
-        "NEXT_ACTION: 请明确截图方式：video、chrome-devtools、computer-use、user-supplied 或 skip。"
+        "NEXT_ACTION: 须明确截图方式，取值为 video、browser-automation、desktop-automation、user-supplied 或 skip。"
     )
 
 
@@ -149,7 +167,7 @@ def confirm_application_fields(workdir: Path, note: str) -> Path:
     if issues:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 申请表信息仍有字段未满足要求。请先补全或修正字段，再重新确认。\n"
+            "NEXT_ACTION: 申请表信息仍有字段未满足要求。须先补全或修正相应字段，再行确认。\n"
             + "\n".join(f"- {item}" for item in issues[:20])
         )
     out_path = workdir / "草稿/申请表字段确认.json"
@@ -180,7 +198,7 @@ def confirm_markdown(workdir: Path, note: str) -> Path:
     if issues:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: Markdown 草稿确认前需要先处理以下事项：\n"
+            "NEXT_ACTION: Markdown 草稿确认前须先处理以下事项：\n"
             + "\n".join(f"- {item}" for item in issues)
         )
 
@@ -209,7 +227,8 @@ def main() -> None:
     parser.add_argument("--note", default="用户已确认")
     parser.add_argument(
         "--method",
-        choices=["video", "chrome-devtools", "computer-use", "user-supplied", "skip"],
+        type=screenshot_method_arg,
+        choices=SCREENSHOT_METHODS,
         help="Screenshot capture method when --stage screenshot-method",
     )
     args = parser.parse_args()

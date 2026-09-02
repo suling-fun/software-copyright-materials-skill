@@ -12,73 +12,43 @@ from typing import Any
 from common import ensure_dir, read_json
 
 
-def join_items(items: list[str], limit: int = 4) -> str:
-    values = [str(item) for item in items if str(item).strip()]
-    if not values:
-        return "业务用户"
-    return "、".join(values[:limit])
+MATCH_PUNCTUATION_PATTERN = re.compile(
+    r"[\s，。；、：？！,.;:?!\"'“”‘’（）()\[\]【】《》〈〉…—\-_/\\|~·]+"
+)
 
 
-def feature_summary(feature: str, detail: str, software_name: str) -> str:
-    clean_detail = normalize_detail(feature, detail)
-    return clean_detail
+def normalize_for_match(text: str) -> str:
+    """Drop whitespace and punctuation so wording can be compared without formatting noise."""
+    return MATCH_PUNCTUATION_PATTERN.sub("", str(text or ""))
 
 
-def plain_manual_text(text: str) -> str:
-    value = text
-    replacements = {
-        "多 Agent": "多智能体",
-        "多 agent": "多智能体",
-        "业务逻辑": "使用过程",
-        "前端页面": "软件页面",
-        "前端": "界面",
-        "后端服务": "系统服务",
-        "后端": "系统服务",
-        "接口": "数据通道",
-        "组件": "页面组成部分",
-        "路由": "页面入口",
-        "状态管理": "状态记录",
-        "数据持久化": "数据保存",
-        "异步任务": "后台处理任务",
-        "任务队列": "任务处理服务",
-        "模型": "智能服务",
-        "调度中心": "协调中心",
-        "结构化依据": "后续说明",
-        "高成本生成": "耗时较长的内容生成",
-    }
-    for source, target in replacements.items():
-        value = value.replace(source, target)
-    value = re.sub(r"(?<![A-Za-z])Agent(?![A-Za-z])", "智能体", value)
-    value = re.sub(r"(?<![A-Za-z])agent(?![A-Za-z])", "智能体", value)
-    value = re.sub(r"\b(?!Node\.js\b)[A-Za-z]+\.js\b", "相关软件能力", value)
-    value = re.sub(r"\bReact\b|\bVue\b|\bVite\b|\bNext\b|\bNext\.js\b|\bFastAPI\b|\bLangGraph\b|\bCelery\b|\bSSE\b", "相关软件能力", value)
-    value = re.sub(r"相关软件能力、相关软件能力", "相关软件能力", value)
-    value = re.sub(r"多智能体\s+协作", "多智能体协作", value)
-    return value
+def reflected_in(prose: str, item: str, ratio: float = 0.5) -> bool:
+    """Whether the model's own prose reflects `item`.
+
+    判定按去标点后的 3 字片段覆盖率进行：原样写入固然通过，改用其他措辞但保留过半片段亦通过；
+    仅有零星字符重合则不通过。此处不要求逐字一致，判定结果不用于改写正文，仅用于报出待修正项。
+    """
+    needle = normalize_for_match(item)
+    haystack = normalize_for_match(prose)
+    if not needle:
+        return True
+    if not haystack:
+        return False
+    if needle in haystack:
+        return True
+    if len(needle) <= 3:
+        return False
+    grams = {needle[index : index + 3] for index in range(len(needle) - 2)}
+    matched = sum(1 for gram in grams if gram in haystack)
+    return matched / len(grams) >= ratio
 
 
-def plain_feature_name(name: str) -> str:
-    value = plain_manual_text(str(name))
-    value = value.replace("Chat", "对话")
-    return value.strip() or "核心功能"
-
-
-def normalize_detail(feature: str, detail: str) -> str:
-    value = plain_manual_text(detail or "").strip()
-    value = re.sub(rf"^{re.escape(feature)}(模块|功能)?用于", "", value)
-    value = re.sub(rf"^{re.escape(feature)}主要用于", "", value)
-    value = re.sub(r"^主要用于", "", value)
-    value = re.sub(rf"^{re.escape(feature)}[：:，, ]*", "", value)
-    value = re.sub(rf"^用户使用{re.escape(feature)}时，可以", "", value)
-    value = re.sub(rf"^进入{re.escape(feature)}后，用户可以", "", value)
-    value = re.sub(rf"^在{re.escape(feature)}中，用户可以", "", value)
-    value = re.sub(rf"^用户通过{re.escape(feature)}可以", "", value)
-    value = re.sub(rf"^在{re.escape(feature)}环节，用户可以", "", value)
-    value = re.sub(rf"^通过{re.escape(feature)}，用户可以", "", value)
-    value = value.strip("。；; ，,")
-    if not value or value == feature:
-        value = "支撑软件中的相关业务处理，帮助用户完成信息查看、内容填写、结果确认或资料维护"
-    return value + ("。" if not value.endswith("。") else "")
+def paragraph_list(raw: Any) -> list[str]:
+    """Normalise a model-authored paragraph field into a list of non-empty paragraphs."""
+    if isinstance(raw, list):
+        return [str(paragraph).strip() for paragraph in raw if str(paragraph).strip()]
+    text = str(raw or "").strip()
+    return [text] if text else []
 
 
 TECHNICAL_TERMS = [
@@ -141,6 +111,28 @@ AI_TONE_MARKERS = [
 ]
 
 
+REQUIRED_SECTION_TITLES = ["说明", "功能特点", "系统要求", "常见问题解答", "术语表"]
+
+# manual_modules 中的下列字段为核对清单：模型须将其内容自行写入 `body`，
+# 校验环节据以检查正文有无遗漏，不再用其拼装句子。
+REQUIRED_MODULE_COVERAGE = (
+    ("entry", "真实入口"),
+    ("visible_elements", "用户可见元素"),
+    ("steps", "主要动作"),
+    ("validation_rules", "输入或状态规则"),
+    ("feedback", "结果反馈"),
+)
+
+SECTION_HEADING_PATTERN = re.compile(
+    r"^##\s+(\(\d+\)|[零一二三四五六七八九十百]+)、\s*(.+?)\s*$",
+    flags=re.M,
+)
+
+FIGURE_LABEL_PATTERN = re.compile(r"(?:^|【)图\s*(\d+)\s*-\s*(\d+)", flags=re.M)
+
+SCREENSHOT_PLACEHOLDER_PATTERN = re.compile(r"【(?:图\s*\d+\s*-\s*\d+\s+)?截图预留：.*?】", flags=re.S)
+
+
 def manual_section_body(text: str, title: str) -> str:
     number_pattern = r"(?:\(\d+\)、|[零一二三四五六七八九十百]+、)"
     pattern = re.compile(rf"^##\s+{number_pattern}\s*{re.escape(title)}\s*$", flags=re.M)
@@ -152,41 +144,133 @@ def manual_section_body(text: str, title: str) -> str:
     return text[match.end() : end].strip()
 
 
+def parse_chinese_number(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    paren = re.fullmatch(r"\((\d+)\)", text)
+    if paren:
+        return int(paren.group(1))
+    if text.isdigit():
+        return int(text)
+    digits = "零一二三四五六七八九"
+    if text in digits:
+        return digits.index(text)
+    if text.startswith("十"):
+        rest = text[1:]
+        if not rest:
+            return 10
+        return 10 + digits.index(rest) if rest in digits else None
+    if "十" in text:
+        tens, _, ones = text.partition("十")
+        if tens not in digits:
+            return None
+        value_tens = digits.index(tens) * 10
+        if not ones:
+            return value_tens
+        if ones not in digits:
+            return None
+        return value_tens + digits.index(ones)
+    return None
+
+
+def iter_manual_sections(text: str) -> list[tuple[str, str, str]]:
+    """Return (number token, title, body) for every rendered chapter, in document order."""
+    matches = list(SECTION_HEADING_PATTERN.finditer(text))
+    sections: list[tuple[str, str, str]] = []
+    for position, match in enumerate(matches):
+        end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
+        sections.append((match.group(1), match.group(2), text[match.end() : end]))
+    return sections
+
+
 def module_prose(body: str) -> str:
     """Return module prose without the independently preserved screenshot placeholder."""
-    return re.sub(r"【截图预留：.*?】", "", body, flags=re.S).strip()
+    return SCREENSHOT_PLACEHOLDER_PATTERN.sub("", body).strip()
 
 
 def module_prose_length(body: str) -> int:
     return len(re.sub(r"\s+", "", module_prose(body)))
 
 
-def manual_quality_issues(text: str, modules: list[dict[str, Any]], has_related_documents: bool) -> list[str]:
+def technical_scope_text(text: str, modules: list[dict[str, Any]]) -> str:
+    """Chapters whose readers are ordinary users: 功能特点、常见问题解答 and each module chapter.
+
+    「说明」章与全部项目自定章节承担交代运行环境、文件路径与数值口径的职责，
+    技术术语在其中属正常表达，不纳入本范围（见 manual_structure.md「技术性表达的边界」）。
+    """
+    titles = ["功能特点", "常见问题解答"]
+    titles.extend(
+        str(module.get("feature") or "").strip()
+        for module in modules
+        if str(module.get("feature") or "").strip()
+    )
+    bodies = [manual_section_body(text, title) for title in titles]
+    return "\n".join(body for body in bodies if body)
+
+
+def structure_issues(text: str, modules: list[dict[str, Any]], extra_sections: list[dict[str, Any]]) -> list[str]:
     issues: list[str] = []
-    required_sections = ["说明", "功能特点", "系统要求", "常见问题解答", "术语表"]
-    for title in required_sections:
+    sections = iter_manual_sections(text)
+    for index, (token, _title, _body) in enumerate(sections, start=1):
+        number = parse_chinese_number(token)
+        if number is None:
+            issues.append(f"章节序号无法识别：{token}")
+            continue
+        if number != index:
+            issues.append(f"章节序号不连续：第 {index} 个章节的序号为 {token}")
+    module_titles = {
+        str(module.get("feature") or "").strip()
+        for module in modules
+        if str(module.get("feature") or "").strip()
+    }
+    extra_titles = [str(item.get("title") or "").strip() for item in extra_sections]
+    for title in extra_titles:
+        if title and not manual_section_body(text, title):
+            issues.append(f"缺少项目自定章节：{title}")
+    known_titles = set(REQUIRED_SECTION_TITLES) | module_titles | {t for t in extra_titles if t}
+    for _token, title, _body in sections:
+        if title not in known_titles:
+            issues.append(f"成稿出现既非必备章节、也不在 manual_extra_sections 与 manual_modules 中的章节：{title}")
+    if sections and sections[-1][1] != "术语表":
+        issues.append(f"术语表不是最后一章，当前末章为：{sections[-1][1]}")
+    for index, (_token, title, body) in enumerate(sections, start=1):
+        labels = [(int(chapter), int(serial)) for chapter, serial in FIGURE_LABEL_PATTERN.findall(body)]
+        for order, (chapter, serial) in enumerate(labels, start=1):
+            if chapter != index:
+                issues.append(f"图编号章号与所在章不一致：{title} 中出现「图 {chapter}-{serial}」，应为第 {index} 章")
+            if serial != order:
+                issues.append(f"图编号章内序号不连续：{title} 中第 {order} 幅图编号为「图 {chapter}-{serial}」")
+    return issues
+
+
+def manual_quality_issues(
+    text: str,
+    modules: list[dict[str, Any]],
+    extra_sections: list[dict[str, Any]] | None = None,
+    extra_section_issues: list[str] | None = None,
+) -> list[str]:
+    issues: list[str] = []
+    extra_sections = extra_sections or []
+    for title in REQUIRED_SECTION_TITLES:
         if not manual_section_body(text, title):
             issues.append(f"缺少通用手册章节：{title}")
     if re.search(r"^##\s+\(\d+\)、", text, flags=re.M):
         issues.append("章节标题仍使用括号数字，应使用中文大写序号")
-    related_body = manual_section_body(text, "相关文档")
-    if has_related_documents:
-        if not related_body:
-            issues.append("缺少通用手册章节：相关文档")
-        elif "| 文档名称 |" not in related_body:
-            issues.append("相关文档章节应使用表格指向配套文档")
-    elif related_body:
-        issues.append("项目未提供真实相关文档信息时不应生成相关文档章节")
+    issues.extend(extra_section_issues or [])
+    issues.extend(structure_issues(text, modules, extra_sections))
+    scope_text = technical_scope_text(text, modules)
     for term in TECHNICAL_TERMS:
-        if term in text:
+        if term in scope_text:
             issues.append(f"存在偏技术表达：{term}")
     for marker in TEMPLATE_MARKERS:
         if marker in text:
             issues.append(f"存在模板化表达：{marker}")
     for marker in AI_TONE_MARKERS:
         if marker in text:
-            issues.append(f"存在疑似 AI 味/空泛表达：{marker}")
-    if text.count("【截图预留：") < len(modules):
+            issues.append(f"存在机器生成特征或空泛表达：{marker}")
+    expected_figures = sum(len(module.get("screenshot_notes") or []) for module in modules)
+    if len(SCREENSHOT_PLACEHOLDER_PATTERN.findall(text)) < expected_figures:
         issues.append("截图预留数量少于核心模块数量")
     list_lines = [
         line.strip()
@@ -206,52 +290,109 @@ def manual_quality_issues(text: str, modules: list[dict[str, Any]], has_related_
         prose = module_prose(body)
         prose_length = module_prose_length(body)
         paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", prose) if paragraph.strip()]
-        if prose_length < 100:
-            issues.append(f"模块信息不足（正文 {prose_length} 字）：{title}")
-        if prose_length > 300:
-            issues.append(f"模块正文过长（正文 {prose_length} 字，上限约 300 字）：{title}")
         if len(paragraphs) not in (2, 3):
-            issues.append(f"模块正文应为 2 个短段落，必要时可为 3 段：{title}")
-        entry = strip_sentence_punctuation(module.get("entry") or "")
-        steps = [strip_sentence_punctuation(item) for item in as_text_list(module.get("steps"))]
-        feedback = [strip_sentence_punctuation(item) for item in as_text_list(module.get("feedback"))]
-        if entry and entry not in prose:
-            issues.append(f"模块缺少真实入口：{title}")
-        if steps and not any(step in prose for step in steps):
-            issues.append(f"模块缺少主要动作：{title}")
-        if feedback and not any(item in prose for item in feedback):
-            issues.append(f"模块缺少结果反馈：{title}")
+            issues.append(f"模块正文段落数应为 2 段，必要时 3 段，当前为 {len(paragraphs)} 段：{title}")
+        if prose_length < 120:
+            issues.append(f"模块正文过短（正文 {prose_length} 字，下限 120 字）：{title}")
+        if prose_length > 300:
+            issues.append(f"模块正文过长（正文 {prose_length} 字，上限 300 字）：{title}")
+        for field, label in REQUIRED_MODULE_COVERAGE:
+            values = as_text_list(module.get(field))
+            if values and not any(reflected_in(prose, value) for value in values):
+                issues.append(f"模块正文未体现{label}：{title}，须由模型将该项内容写入 `body`")
+        for field, label in (("rationale", "设计取舍原因"), ("boundary", "边界情形")):
+            values = as_text_list(module.get(field))
+            if values and not any(reflected_in(prose, value) for value in values):
+                issues.append(
+                    f"模块 `{field}` 非空但正文未体现{label}：{title}，"
+                    "须由模型将该内容融入 `body`，生成环节不再拼接追加"
+                )
         for label in ("进入方式：", "页面内容：", "操作步骤：", "操作规则：", "操作结果与反馈："):
             if label in body:
                 issues.append(f"模块仍使用制式小标题：{title} / {label}")
     return issues
 
 
-def clean_field(value: str, default: str) -> str:
-    text = plain_manual_text(str(value or "")).strip()
-    if not text or text == "待用户确认":
-        return default
-    return text + ("。" if not text.endswith(("。", "！", "？")) else "")
+TEMPLATE_SIMILARITY_THRESHOLD = 0.35
+
+
+def sentence_shape(paragraph: str, title: str) -> set[str]:
+    """The 4-character shingles of a paragraph, with the module name removed.
+
+    去掉模块名后，两段套用同一模板的正文会在连接成分上大量重合，而各自撰写的正文不会。
+    """
+    value = paragraph.replace(title, "") if title else paragraph
+    value = re.sub(r"\s+", "", value)
+    return {value[index : index + 4] for index in range(len(value) - 3)}
+
+
+def shape_similarity(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def template_rotation_warnings(text: str, modules: list[dict[str, Any]]) -> list[str]:
+    """Flag three or more modules whose first paragraph shares one sentence shape.
+
+    判定从严：须有三个以上模块两两高度重合，宁可漏报，不可误报。本项仅作提示，不改写正文。
+    """
+    shapes: list[tuple[str, set[str]]] = []
+    for module in modules:
+        title = str(module.get("feature") or "").strip()
+        if not title:
+            continue
+        prose = module_prose(manual_section_body(text, title))
+        paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", prose) if paragraph.strip()]
+        if not paragraphs:
+            continue
+        shape = sentence_shape(paragraphs[0], title)
+        if len(shape) >= 12:
+            shapes.append((title, shape))
+    groups: set[frozenset[str]] = set()
+    for index, (title, shape) in enumerate(shapes):
+        similar = [
+            other_title
+            for other_index, (other_title, other_shape) in enumerate(shapes)
+            if other_index != index and shape_similarity(shape, other_shape) >= TEMPLATE_SIMILARITY_THRESHOLD
+        ]
+        if len(similar) >= 2:
+            groups.add(frozenset([title, *similar]))
+    return [
+        "以下模块正文首段句式高度雷同，疑似模板轮换，须由模型分别改写：" + "、".join(sorted(group))
+        for group in sorted(groups, key=sorted)
+    ]
+
+
+def manual_quality_warnings(text: str, modules: list[dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    has_rationale_or_boundary = any(
+        module.get("rationale") or module.get("boundary") for module in modules
+    )
+    if modules and not has_rationale_or_boundary:
+        warnings.append("未提供任何设计取舍原因与边界情形，手册易呈现模板化特征")
+    warnings.extend(template_rotation_warnings(text, modules))
+    return warnings
 
 
 def as_text_list(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [plain_manual_text(str(item)).strip() for item in value if str(item).strip()]
-    text = plain_manual_text(str(value)).strip()
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
     if not text:
         return []
     return [item.strip() for item in re.split(r"[；;\n]+", text) if item.strip()]
 
 
 def required_module_text(item: dict[str, Any], field: str, title: str) -> str:
-    value = plain_manual_text(str(item.get(field) or "")).strip()
+    value = str(item.get(field) or "").strip()
     if not value:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            f"NEXT_ACTION: 操作手册页面模块“{title}”缺少 `{field}`。请回到业务理解阶段，"
-            "由模型根据真实页面证据补全 manual_modules 后再生成操作手册。"
+            f"NEXT_ACTION: 操作手册页面模块「{title}」缺少 `{field}`。须回到业务理解阶段，"
+            "由模型依据真实页面证据补全 manual_modules，再生成操作手册。"
         )
     return value
 
@@ -261,8 +402,8 @@ def required_module_list(item: dict[str, Any], field: str, title: str) -> list[s
     if not values:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            f"NEXT_ACTION: 操作手册页面模块“{title}”缺少 `{field}`。请回到业务理解阶段，"
-            "由模型根据真实页面证据补全 manual_modules 后再生成操作手册。"
+            f"NEXT_ACTION: 操作手册页面模块「{title}」缺少 `{field}`。须回到业务理解阶段，"
+            "由模型依据真实页面证据补全 manual_modules，再生成操作手册。"
         )
     return values
 
@@ -275,8 +416,8 @@ def normalize_manual_modules(
     if not manual_modules:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 业务理解缺少 `manual_modules`。不要由脚本按 auth/query/form 等模板猜测操作手册。"
-            "请模型阅读项目真实页面、路由、按钮、输入项、提示和结果反馈，补全 manual_modules 后再生成操作手册。"
+            "NEXT_ACTION: 业务理解缺少 `manual_modules`。不得按 auth/query/form 等模板推测操作手册内容。"
+            "须先阅读项目真实页面、路由、按钮、输入项、提示与结果反馈，补全 manual_modules，再生成操作手册。"
         )
 
     modules: list[dict[str, Any]] = []
@@ -284,45 +425,111 @@ def normalize_manual_modules(
         if not isinstance(item, dict):
             raise SystemExit(
                 "STOP_FOR_USER\n"
-                f"NEXT_ACTION: manual_modules 第 {index} 项不是对象，无法生成真实操作手册。请补全 title、purpose、entry、operation_steps、feedback 等字段。"
+                f"NEXT_ACTION: manual_modules 第 {index} 项不是对象，无法据以生成真实操作手册。须补全 title、purpose、entry、operation_steps、feedback 等字段。"
             )
-        title = plain_feature_name(item.get("title") or item.get("feature") or f"功能模块 {index}")
+        title = str(item.get("title") or item.get("feature") or "").strip() or f"功能模块 {index}"
         purpose = required_module_text(item, "purpose", title)
         entry = required_module_text(item, "entry", title)
-        usage = plain_manual_text(
-            str(item.get("usage") or item.get("usage_scenario") or item.get("description") or "")
-        ).strip()
+        usage = str(item.get("usage") or item.get("usage_scenario") or item.get("description") or "").strip()
         if not usage:
             raise SystemExit(
                 "STOP_FOR_USER\n"
-                f"NEXT_ACTION: 操作手册页面模块“{title}”缺少 `usage` 或 `usage_scenario`。请回到业务理解阶段，"
-                "补充用户在什么场景下会使用该页面、处理什么具体事务，再生成操作手册。"
+                f"NEXT_ACTION: 操作手册页面模块「{title}」缺少 `usage` 或 `usage_scenario`。须回到业务理解阶段，"
+                "补充用户在何种场景下使用该页面、处理何种具体事务，再生成操作手册。"
             )
         steps = required_module_list(item, "operation_steps", title)
         feedback = required_module_list(item, "feedback", title)
-        screenshot_note = plain_manual_text(str(item.get("screenshot") or "")).strip()
-        if not screenshot_note:
-            screenshot_note = f"请在此处插入“{title}”页面或操作结果截图"
-        if screenshot_note.startswith("【截图预留："):
-            screenshot_field = screenshot_note
-        else:
-            screenshot_field = f"【截图预留：{screenshot_note.strip('。')}。】"
+        body = required_module_body(item, title)
+        raw_screenshot = item.get("screenshot")
+        raw_notes = raw_screenshot if isinstance(raw_screenshot, list) else [raw_screenshot]
+        screenshot_notes = [
+            strip_screenshot_note(str(note)) for note in raw_notes if str(note or "").strip()
+        ]
+        screenshot_notes = [note for note in screenshot_notes if note]
+        if not screenshot_notes:
+            screenshot_notes = [f"请在此处插入「{title}」页面或操作结果截图"]
         modules.append(
             {
                 "feature": title,
                 "raw_feature": title,
-                "purpose": purpose + ("。" if not purpose.endswith(("。", "！", "？")) else ""),
-                "entry": entry + ("。" if not entry.endswith(("。", "！", "？")) else ""),
+                "body": body,
+                "purpose": purpose,
+                "entry": entry,
                 "usage": usage,
                 "visible_elements": as_text_list(item.get("visible_elements") or item.get("page_elements")),
                 "steps": steps,
                 "validation_rules": as_text_list(item.get("validation_rules") or item.get("rules") or item.get("limits")),
                 "feedback": feedback,
-                "result": "；".join(feedback),
-                "screenshot": screenshot_field,
+                "rationale": as_text_list(item.get("rationale")),
+                "boundary": as_text_list(item.get("boundary")),
+                "screenshot_notes": screenshot_notes,
             }
         )
     return modules
+
+
+def required_module_body(item: dict[str, Any], title: str) -> list[str]:
+    """Take the module chapter prose the model wrote; never compose a fallback."""
+    paragraphs = paragraph_list(item.get("body"))
+    if not paragraphs:
+        raise SystemExit(
+            "STOP_FOR_USER\n"
+            f"NEXT_ACTION: 操作手册页面模块「{title}」缺少 `body`。操作手册正文由模型撰写，生成环节不造句、不作缺省生成。"
+            "须回到业务理解阶段，依据该模块的 entry、visible_elements、operation_steps、validation_rules、"
+            "feedback、rationale、boundary 撰写 2 段（必要时 3 段）正文并写入 `body`，再重新生成操作手册。"
+        )
+    return paragraphs
+
+
+def required_manual_overview(business: dict[str, Any] | None) -> list[str]:
+    """说明章正文，由模型撰写并原样输出。"""
+    paragraphs = paragraph_list(business.get("manual_overview") if business else None)
+    if not paragraphs:
+        raise SystemExit(
+            "STOP_FOR_USER\n"
+            "NEXT_ACTION: 业务理解缺少 `manual_overview`。操作手册「说明」章正文由模型撰写，生成环节不造句、不作缺省生成。"
+            "须补写软件定位、目标用户、业务场景与整体流程的段落数组，再重新生成操作手册。"
+        )
+    return paragraphs
+
+
+def required_feature_highlights(business: dict[str, Any] | None) -> list[dict[str, str]]:
+    """功能特点各项正文，由模型撰写并原样输出。"""
+    raw_items = business.get("manual_feature_highlights") if business else None
+    items: list[dict[str, str]] = []
+    if isinstance(raw_items, list):
+        for entry in raw_items:
+            if isinstance(entry, dict):
+                title = str(entry.get("title") or "").strip()
+                paragraph = str(entry.get("paragraph") or "").strip()
+            else:
+                title = ""
+                paragraph = str(entry or "").strip()
+            if paragraph:
+                items.append({"title": title, "paragraph": paragraph})
+    if not items:
+        raise SystemExit(
+            "STOP_FOR_USER\n"
+            "NEXT_ACTION: 业务理解缺少 `manual_feature_highlights`。操作手册「功能特点」章正文由模型撰写，"
+            "生成环节不造句、不作缺省生成。须按真实功能撰写 4 至 8 项，每项含 title 与成文的 paragraph，"
+            "各项句式须有差异，补齐后再重新生成操作手册。"
+        )
+    return items
+
+
+def strip_screenshot_note(note: str) -> str:
+    """Keep the model's own wording; drop any placeholder wrapper or figure number it already wrote."""
+    value = str(note or "").strip()
+    value = re.sub(r"^【\s*", "", value)
+    value = re.sub(r"\s*】$", "", value)
+    value = re.sub(r"^图\s*\d+\s*-\s*\d+\s*", "", value)
+    value = re.sub(r"^截图预留[：:]\s*", "", value)
+    value = re.sub(r"^图\s*\d+\s*-\s*\d+\s*", "", value)
+    return value.strip().rstrip("。")
+
+
+def screenshot_placeholder(chapter_index: int, serial: int, note: str) -> str:
+    return f"【图 {chapter_index}-{serial} 截图预留：{note}。】"
 
 
 def normalize_system_requirements(business: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -337,15 +544,15 @@ def normalize_system_requirements(business: dict[str, Any] | None) -> list[dict[
                 if name:
                     rows.append(
                         {
-                            "item": plain_manual_text(name),
-                            "minimum": plain_manual_text(minimum or "按实际部署环境配置"),
-                            "recommended": plain_manual_text(recommended or minimum or "按实际部署环境配置"),
+                            "item": name,
+                            "minimum": minimum or "按实际部署环境配置",
+                            "recommended": recommended or minimum or "按实际部署环境配置",
                         }
                     )
     if not rows:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 业务理解缺少 `system_requirements`。请根据真实项目运行形态和已确认申请表环境补全后再生成操作手册。"
+            "NEXT_ACTION: 业务理解缺少 `system_requirements`。须依据真实项目运行形态与已确认的申请表环境补全，再生成操作手册。"
         )
     return rows
 
@@ -359,11 +566,11 @@ def normalize_faq(business: dict[str, Any] | None, software_name: str) -> list[d
                 question = str(item.get("question") or item.get("q") or "").strip()
                 answer = str(item.get("answer") or item.get("a") or "").strip()
                 if question and answer:
-                    items.append({"question": plain_manual_text(question), "answer": plain_manual_text(answer)})
+                    items.append({"question": question, "answer": answer})
     if not items:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 业务理解缺少 `faq`。请根据当前软件真实使用场景补全常见问题后再生成操作手册。"
+            "NEXT_ACTION: 业务理解缺少 `faq`。须依据当前软件真实使用场景补全常见问题，再生成操作手册。"
         )
     return items
 
@@ -377,18 +584,13 @@ def normalize_glossary(business: dict[str, Any] | None, modules: list[dict[str, 
                 term = str(item.get("term") or item.get("name") or "").strip()
                 definition = str(item.get("definition") or item.get("description") or "").strip()
                 if term and definition:
-                    items.append({"term": plain_manual_text(term), "definition": plain_manual_text(definition)})
+                    items.append({"term": term, "definition": definition})
     if items:
         return items
     raise SystemExit(
         "STOP_FOR_USER\n"
-        "NEXT_ACTION: 业务理解缺少 `glossary`。请根据当前软件真实业务对象和页面术语补全术语表后再生成操作手册。"
+        "NEXT_ACTION: 业务理解缺少 `glossary`。须依据当前软件真实业务对象与页面术语补全术语表，再生成操作手册。"
     )
-
-
-def feature_phrase(modules: list[dict[str, Any]], limit: int = 5) -> str:
-    names = [module["feature"] for module in modules if module.get("feature")]
-    return "、".join(names[:limit]) if names else "主要业务处理"
 
 
 def chinese_number(value: int) -> str:
@@ -411,338 +613,178 @@ def section_heading(index: int, title: str) -> str:
     return f"## {chinese_number(index)}、{title}"
 
 
-def strip_sentence_punctuation(text: str) -> str:
-    return str(text or "").strip().strip("。；;，, ")
+EXTRA_SECTION_POSITIONS = ("before_modules", "after_modules", "before_glossary")
 
 
-def natural_join(items: list[str], limit: int | None = None) -> str:
-    values = [strip_sentence_punctuation(item) for item in items if strip_sentence_punctuation(item)]
-    if limit is not None:
-        values = values[:limit]
-    if not values:
-        return ""
-    if len(values) == 1:
-        return values[0]
-    return "、".join(values[:-1]) + "和" + values[-1]
+def normalize_extra_sections(business: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Carry `manual_extra_sections` through untouched.
 
-
-def ensure_sentence(text: str) -> str:
-    value = strip_sentence_punctuation(plain_manual_text(text))
-    if not value:
-        return ""
-    return value + "。"
-
-
-def remove_opening_definition(text: str, software_name: str) -> str:
-    value = plain_manual_text(text).strip()
-    if not value:
-        return ""
-    sentences = re.findall(r"[^。！？]+[。！？]?", value)
-    if sentences and sentences[0].startswith(software_name) and "是一款" in sentences[0]:
-        sentences = sentences[1:]
-    return "".join(sentences).strip()
-
-
-def flow_summary(flow: list[str], modules: list[dict[str, Any]]) -> str:
-    if flow:
-        pieces = [strip_sentence_punctuation(plain_manual_text(item)) for item in flow[:4]]
-        pieces = [item for item in pieces if item]
-        if pieces:
-            return "；".join(pieces) + "。"
-    names = [module["feature"] for module in modules[:4]]
-    if names:
-        return f"用户可依次使用{natural_join(names)}等页面完成主要工作。"
-    return "用户可按照页面提示完成主要业务操作。"
-
-
-def describe_related_doc(name: str) -> str:
-    if "总体" in name:
-        return "说明软件整体功能、页面组成、运行环境和业务边界。"
-    if "详细" in name:
-        return "说明各功能页面、输入输出、状态变化和处理规则。"
-    if "测试" in name or "案例" in name:
-        return "记录主要功能的操作场景、预期结果和异常提示。"
-    return "记录与本软件功能、操作或验证相关的配套说明。"
-
-
-def normalize_related_documents(business: dict[str, Any] | None) -> list[dict[str, str]]:
-    raw_items = business.get("related_documents") if business else None
-    rows: list[dict[str, str]] = []
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict):
-                name = str(item.get("name") or item.get("title") or item.get("document") or "").strip()
-                target = str(item.get("target") or item.get("path") or item.get("file") or "").strip()
-                description = str(item.get("description") or item.get("purpose") or "").strip()
-                if name:
-                    rows.append(
-                        {
-                            "name": plain_manual_text(name),
-                            "target": plain_manual_text(target or f"《{name}》"),
-                            "description": plain_manual_text(description or describe_related_doc(name)),
-                        }
-                    )
-            elif str(item).strip():
-                name = str(item).strip()
-                rows.append(
-                    {
-                        "name": plain_manual_text(name),
-                        "target": f"《{plain_manual_text(name)}》",
-                        "description": describe_related_doc(name),
-                    }
-                )
-    return rows
-
-
-def clean_purpose_text(feature: str, purpose: str) -> str:
-    value = strip_sentence_punctuation(plain_manual_text(purpose))
-    value = re.sub(rf"^{re.escape(feature)}(页面|功能|模块|环节)?(主要)?用于", "", value)
-    value = re.sub(r"^[^，。；;]{1,30}(页面|功能|模块|环节|状态栏|面板)?(主要)?用于", "", value)
-    value = re.sub(r"^用于", "", value)
-    value = value.strip("。；;，, ")
-    return value or "完成本页面相关操作"
-
-
-def page_label(feature: str) -> str:
-    value = strip_sentence_punctuation(feature)
-    if value.startswith("用户") and len(value) > 2:
-        value = value[2:]
-    return value
-
-
-def purpose_core_sentence(feature: str, purpose: str) -> str:
-    value = clean_purpose_text(feature, purpose)
-    label = page_label(feature)
-    if re.match(r"^(展示|集中展示|承载|提供|处理|保存|记录|辅助)", value):
-        return f"{label}页面{value}"
-    if value.startswith("让用户"):
-        return f"{label}页面{value}"
-    return f"用户可在{label}页面{value}"
-
-
-def purpose_sentence(feature: str, purpose: str) -> str:
-    return purpose_core_sentence(feature, purpose) + "。"
-
-
-def entry_sentence(entry: str) -> str:
-    value = strip_sentence_punctuation(plain_manual_text(entry))
-    if not value:
-        return ""
-    if value.startswith("用户"):
-        return value + "。"
-    if re.match(r"^(登录|创建|进入|打开|点击|完成|选择|提交|从)", value):
-        return f"用户{value}。"
-    if value.startswith("当"):
-        return value + "。"
-    return f"用户可以通过{value}。"
-
-
-def visible_elements_sentence(items: list[str], feature: str, index: int) -> str:
-    value = natural_join(items, limit=8)
-    if not value:
-        return ""
-    variants = [
-        f"页面上显示{value}。",
-        f"用户可在页面中查看{value}。",
-        f"页面的关键内容包括{value}。",
-    ]
-    return variants[(index - 1) % len(variants)]
-
-
-def steps_sentence(steps: list[str], module_index: int) -> str:
-    values = [strip_sentence_punctuation(step) for step in steps if strip_sentence_punctuation(step)]
-    if not values:
-        return ""
-    connectors = ["先", "随后", "接着", "之后", "再", "继续"]
-    parts: list[str] = []
-    for step_index, step in enumerate(values):
-        if step_index == len(values) - 1 and len(values) > 1:
-            connector = "最后"
+    章节名、位置、正文与表格一律按模型所写渲染，渲染环节不解释其语义，
+    不识别任何具体章节名，亦不作推断或缺省填充。
+    """
+    raw_items = business.get("manual_extra_sections") if business else None
+    if raw_items is None:
+        return [], []
+    issues: list[str] = []
+    if not isinstance(raw_items, list):
+        return [], ["manual_extra_sections 不是数组，未生成任何项目自定章节"]
+    sections: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            issues.append(f"manual_extra_sections 第 {index} 项不是对象，未生成对应章节")
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            issues.append(f"manual_extra_sections 第 {index} 项缺少 title，未生成对应章节")
+            continue
+        position = str(item.get("position") or "").strip()
+        if position not in EXTRA_SECTION_POSITIONS:
+            issues.append(
+                f"manual_extra_sections「{title}」的 position 取值 {position!r} 不在 "
+                f"{EXTRA_SECTION_POSITIONS} 之内，未生成对应章节"
+            )
+            continue
+        raw_paragraphs = item.get("paragraphs")
+        if isinstance(raw_paragraphs, list):
+            paragraphs = [str(paragraph).strip() for paragraph in raw_paragraphs if str(paragraph).strip()]
+        elif str(raw_paragraphs or "").strip():
+            paragraphs = [str(raw_paragraphs).strip()]
         else:
-            connector = connectors[min(step_index, len(connectors) - 1)]
-        prefix = "用户" if step_index == 0 else ""
-        parts.append(f"{prefix}{connector}{step}。")
-    return "".join(parts)
+            paragraphs = []
+        table = normalize_extra_table(item.get("table"))
+        if table is None and item.get("table") is not None:
+            issues.append(f"manual_extra_sections「{title}」的 table 结构不符合预期，已忽略该表格")
+        if not paragraphs and table is None:
+            issues.append(f"manual_extra_sections「{title}」既无 paragraphs 也无可用 table，未生成对应章节")
+            continue
+        try:
+            order = int(item.get("order"))
+        except (TypeError, ValueError):
+            order = None
+        sections.append(
+            {
+                "title": title,
+                "position": position,
+                "order": order,
+                "paragraphs": paragraphs,
+                "table": table,
+            }
+        )
+    return sections, issues
 
 
-def rules_feedback_sentence(rules: list[str], feedback: list[str], index: int) -> str:
-    parts: list[str] = []
-    rule_text = natural_join(rules, limit=6)
-    if rule_text:
-        rule_templates = [
-            f"需遵守{rule_text}。",
-            f"页面按{rule_text}校验。",
-            f"不符合{rule_text}时需按提示修改。",
-        ]
-        parts.append(rule_templates[(index - 1) % len(rule_templates)])
-    feedback_text = natural_join(feedback, limit=6)
-    if feedback_text:
-        feedback_templates = [
-            f"完成后显示{feedback_text}。",
-            f"处理后可见{feedback_text}。",
-            f"页面反馈{feedback_text}。",
-        ]
-        parts.append(feedback_templates[(index - 1) % len(feedback_templates)])
-    return "".join(parts)
+def normalize_extra_table(raw_table: Any) -> dict[str, list[Any]] | None:
+    if not isinstance(raw_table, dict):
+        return None
+    headers = raw_table.get("headers")
+    rows = raw_table.get("rows")
+    if not isinstance(headers, list) or not headers:
+        return None
+    if not isinstance(rows, list):
+        return None
+    clean_headers = [str(header).strip() for header in headers]
+    clean_rows: list[list[str]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            return None
+        clean_rows.append([str(cell).strip() for cell in row])
+    return {"headers": clean_headers, "rows": clean_rows}
 
 
-def feature_paragraph(module: dict[str, Any], index: int) -> str:
-    feature = module["feature"]
-    purpose = clean_purpose_text(feature, module.get("purpose") or "")
-    label = page_label(feature)
-    core = purpose_core_sentence(feature, module.get("purpose") or "")
-    elements = natural_join(as_text_list(module.get("visible_elements")), limit=5)
-    feedback = natural_join(as_text_list(module.get("feedback")), limit=3)
-    variants = [
-        f"{core}。页面上的{elements or '相关业务信息'}会集中呈现当前可操作内容，用户处理完成后可以看到{feedback or '相应的处理结果'}。",
-        f"在{label}页面中，用户主要处理{purpose}。系统把{elements or '页面显示内容'}放在当前操作区域，处理结束后会反馈{feedback or '处理结果'}。",
-        f"{label}页面关注的是{purpose}。用户通过{elements or '必要的页面信息'}确认当前状态，并在操作结束后获得{feedback or '当前状态反馈'}。",
-    ]
-    return variants[(index - 1) % len(variants)]
+def extra_sections_at(sections: list[dict[str, Any]], position: str) -> list[dict[str, Any]]:
+    selected = [section for section in sections if section["position"] == position]
+    return sorted(
+        selected,
+        key=lambda section: section["order"] if section["order"] is not None else 10**6,
+    )
+
+
+def append_extra_sections(lines: list[str], sections: list[dict[str, Any]], start_index: int) -> int:
+    index = start_index
+    for section in sections:
+        lines.extend([section_heading(index, section["title"]), ""])
+        for paragraph in section["paragraphs"]:
+            lines.extend([paragraph, ""])
+        table = section["table"]
+        if table:
+            lines.append("| " + " | ".join(table["headers"]) + " |")
+            lines.append("| " + " | ".join("---" for _ in table["headers"]) + " |")
+            for row in table["rows"]:
+                lines.append("| " + " | ".join(row) + " |")
+            lines.append("")
+        index += 1
+    return index
 
 
 def tidy_manual_output(text: str) -> str:
-    replacements = {
-        "用户主要处理处理": "用户主要处理",
-        "主要处理承载一次": "主要围绕一次",
-        "用户可以看到用户可以看到": "用户可以看到",
-        "处理结束后会反馈空对话": "处理结束后会显示空对话",
-        "在AI ": "在 AI ",
-        "把StudioAgent": "把 StudioAgent",
-        "页面上的StudioAgent": "页面上的 StudioAgent",
-        "看到StudioAgent": "看到 StudioAgent",
-        "提供StudioAgent": "提供 StudioAgent",
-        "进入StudioAgent": "进入 StudioAgent",
-        "保证StudioAgent": "保证 StudioAgent",
-    }
-    value = text
-    for source, target in replacements.items():
-        value = value.replace(source, target)
-    value = re.sub(r"(?<=[\u4e00-\u9fff])([A-Za-z][A-Za-z0-9.+-]*)(?=[\u4e00-\u9fff])", r" \1 ", value)
+    """Typographic normalisation only: 中英文之间补一个空格。不改动模型所写的文字。"""
+    value = re.sub(r"(?<=[\u4e00-\u9fff])([A-Za-z][A-Za-z0-9.+-]*)(?=[\u4e00-\u9fff])", r" \1 ", text)
     value = re.sub(r" {2,}", " ", value)
     return value
 
 
+def feature_highlight_paragraph(item: dict[str, str]) -> str:
+    """Render one 功能特点 item as a single paragraph, verbatim."""
+    title = item["title"]
+    paragraph = item["paragraph"]
+    if not title or paragraph.startswith(title):
+        return paragraph
+    return f"{title}：{paragraph}"
+
+
 def append_modules_canonical(lines: list[str], modules: list[dict[str, Any]], start_index: int) -> int:
     for i, module in enumerate(modules, start=start_index):
-        visible_elements = as_text_list(module.get("visible_elements"))
-        validation_rules = as_text_list(module.get("validation_rules"))
-        feedback = as_text_list(module.get("feedback")) or [module["result"]]
-        first_paragraph = purpose_sentence(module["feature"], module["purpose"])
-        if module.get("usage"):
-            first_paragraph += ensure_sentence(module["usage"])
-        first_paragraph += entry_sentence(module["entry"])
-        element_text = visible_elements_sentence(visible_elements, module["feature"], i)
-        if element_text:
-            first_paragraph += element_text
-        step_text = steps_sentence(module["steps"], i)
-        rule_feedback = rules_feedback_sentence(validation_rules, feedback, i)
-        second_paragraph = step_text + rule_feedback
-        lines.extend(
-            [
-                section_heading(i, module["feature"]),
-                "",
-                first_paragraph,
-                "",
-                second_paragraph,
-                "",
-                module["screenshot"],
-                "",
-            ]
-        )
+        lines.extend([section_heading(i, module["feature"]), ""])
+        for paragraph in module["body"]:
+            lines.extend([paragraph, ""])
+        for serial, note in enumerate(module.get("screenshot_notes") or [], start=1):
+            lines.extend([screenshot_placeholder(i, serial, note), ""])
     return start_index + len(modules)
-
-def append_flow_canonical(lines: list[str], software_name: str, flow: list[str], start_index: int) -> int:
-    lines.extend(
-        [
-            section_heading(start_index, "典型使用流程"),
-            "",
-            flow_summary(flow, []),
-            "",
-        ]
-    )
-    return start_index + 1
 
 
 def render_manual_canonical(
     software_name: str,
-    version: str,
-    industry: str,
-    users: list[str],
-    positioning: str,
-    core_value: str,
     modules: list[dict[str, Any]],
-    operation_flow: list[str],
-    manual_sections: list[Any] | None = None,
+    overview_paragraphs: list[str],
+    feature_highlights: list[dict[str, str]],
     business: dict[str, Any] | None = None,
+    extra_sections: list[dict[str, Any]] | None = None,
 ) -> str:
-    industry_text = "相关业务" if not industry or industry == "待用户确认" else industry
-    user_text = join_items([user for user in users if user != "待用户确认"]) or "实际使用人员"
-    positioning_text = remove_opening_definition(positioning, software_name)
-    core_value_text = clean_field(core_value, "软件可以帮助用户统一处理相关业务资料，并减少重复操作。")
-    flow = operation_flow
-    related_documents = normalize_related_documents(business)
+    """Assemble the manual from prose the model wrote; the script orders, numbers and renders only."""
     system_rows = normalize_system_requirements(business)
     faq_items = normalize_faq(business, software_name)
     glossary_items = normalize_glossary(business, modules, software_name)
-    overview_paragraphs: list[str] = []
-    for section in manual_sections or []:
-        if isinstance(section, dict) and section.get("paragraphs") and len(overview_paragraphs) < 4:
-            overview_paragraphs.extend(as_text_list(section.get("paragraphs"))[:2])
+    extra_sections = extra_sections or []
 
     lines = [f"# {software_name}操作手册", ""]
     next_index = 1
-    if related_documents:
-        lines.extend([section_heading(next_index, "相关文档"), ""])
-        next_index += 1
-        lines.extend(["| 文档名称 | 指向资料 | 说明 |", "| --- | --- | --- |"])
-        for item in related_documents:
-            lines.append(f"| {item['name']} | {item['target']} | {item['description']} |")
-        lines.append("")
-    lines.extend(
-        [
-            section_heading(next_index, "说明"),
-            "",
-            f"{software_name} {version}适用于{industry_text}场景，核心功能围绕{feature_phrase(modules)}展开。",
-            "",
-            f"日常使用时，{user_text}可以按照页面提示从入口进入相应页面，查看当前业务状态，并根据页面中的按钮、输入框、列表或弹窗继续处理。{core_value_text}",
-            "",
-        ]
-    )
+    lines.extend([section_heading(next_index, "说明"), ""])
     next_index += 1
-    if positioning_text:
-        lines.extend([positioning_text, ""])
     for paragraph in overview_paragraphs:
         lines.extend([paragraph, ""])
-    lines.extend(
-        [
-            "本手册用于说明软件的用途、功能特点、运行要求和页面操作流程。各功能章节按用户能够看到的页面、入口、按钮、输入项、提示信息和处理结果进行说明。",
-            "",
-            section_heading(next_index, "功能特点"),
-            "",
-        ]
-    )
+    lines.extend([section_heading(next_index, "功能特点"), ""])
     next_index += 1
-    for i, module in enumerate(modules[:8], start=1):
-        lines.extend([feature_paragraph(module, i), ""])
+    for item in feature_highlights:
+        lines.extend([feature_highlight_paragraph(item), ""])
     lines.extend([section_heading(next_index, "系统要求"), "", "| 系统要求 | 最低配置 | 推荐配置 |", "| --- | --- | --- |"])
     next_index += 1
     for row in system_rows:
         lines.append(f"| {row['item']} | {row['minimum']} | {row['recommended']} |")
-    lines.extend(
-        [
-            "",
-            f"请确保实际运行环境满足以上要求，以保证{software_name}能够正常运行并完成本手册各章节描述的操作。若实际运行环境与本表不同，应以已确认的申请表环境字段为准。",
-            "",
-        ]
+    lines.append("")
+    next_index = append_extra_sections(
+        lines, extra_sections_at(extra_sections, "before_modules"), start_index=next_index
     )
     next_index = append_modules_canonical(lines, modules, start_index=next_index)
-    if flow:
-        next_index = append_flow_canonical(lines, software_name, flow, start_index=next_index)
+    next_index = append_extra_sections(
+        lines, extra_sections_at(extra_sections, "after_modules"), start_index=next_index
+    )
     lines.extend([section_heading(next_index, "常见问题解答"), ""])
     for item in faq_items:
         lines.extend([f"问题：{item['question']}", f"解决方法：{item['answer']}", ""])
     next_index += 1
+    next_index = append_extra_sections(
+        lines, extra_sections_at(extra_sections, "before_glossary"), start_index=next_index
+    )
     lines.extend([section_heading(next_index, "术语表"), "", "| 术语 | 解释 |", "| --- | --- |"])
     for item in glossary_items:
         lines.append(f"| {item['term']} | {item['definition']} |")
@@ -756,7 +798,7 @@ def append_stop(lines: list[str]) -> None:
         [
             "```text",
             "STOP_FOR_USER",
-            "NEXT_ACTION: 请一次性确认完整操作手册草稿是否符合真实业务；必要时先统一修改段落内容，再运行 confirm_stage.py --stage markdown。",
+            "NEXT_ACTION: 须一次性确认完整操作手册草稿是否符合真实业务。必要时先统一修改段落内容，再运行 confirm_stage.py --stage markdown。",
             "```",
             "",
         ]
@@ -769,41 +811,48 @@ def build_manual_text(
     version: str,
     business: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-    positioning = plain_manual_text(business.get("product_positioning") if business else f"{software_name} {version}是一款基于项目实际功能整理的软件系统。")
-    core_value = plain_manual_text(business.get("core_value") if business else "系统通过清晰的软件界面为用户提供主要业务入口，支持用户完成信息查看、业务处理、数据维护和结果反馈等操作。")
-    users = business.get("target_users") if business else ["业务用户"]
-    operation_flow = business.get("operation_flow") if business else []
-    manual_sections = business.get("manual_sections") if business else []
-    industry = business.get("industry") if business else "业务应用"
-    if positioning.rstrip("。") == software_name.rstrip("。"):
-        positioning = "用户可以根据项目资料中体现的业务场景完成相应操作。"
-    elif not positioning.endswith("。"):
-        positioning += "。"
     modules = normalize_manual_modules(business, [])
-    has_related_documents = bool(normalize_related_documents(business))
+    overview_paragraphs = required_manual_overview(business)
+    feature_highlights = required_feature_highlights(business)
+    extra_sections, extra_section_issues = normalize_extra_sections(business)
     records: list[dict[str, Any]] = []
 
-    text = render_manual_canonical(software_name, version, industry, users, positioning, core_value, modules, operation_flow, manual_sections, business)
-    records.append({"round": 1, "action": "初稿生成", "issues": manual_quality_issues(text, modules, has_related_documents)})
+    def render() -> str:
+        return render_manual_canonical(
+            software_name,
+            modules,
+            overview_paragraphs,
+            feature_highlights,
+            business,
+            extra_sections,
+        )
 
-    text = render_manual_canonical(software_name, version, industry, users, positioning, core_value, modules, operation_flow, manual_sections, business)
-    records.append({"round": 2, "action": "压缩重复、保留流程衔接", "issues": manual_quality_issues(text, modules, has_related_documents)})
+    def review(round_no: int, action: str, text: str) -> dict[str, Any]:
+        return {
+            "round": round_no,
+            "action": action,
+            "issues": manual_quality_issues(text, modules, extra_sections, extra_section_issues),
+            "warnings": manual_quality_warnings(text, modules),
+        }
 
-    text = render_manual_canonical(software_name, version, industry, users, positioning, core_value, modules, operation_flow, manual_sections, business)
-    records.append({"round": 3, "action": "制式模板和 AI 味复核", "issues": manual_quality_issues(text, modules, has_related_documents)})
+    text = render()
+    records.append(review(1, "初稿生成", text))
 
-    for round_no in range(4, 7):
+    text = render()
+    records.append(review(2, "压缩重复、保留流程衔接", text))
+
+    text = render()
+    records.append(review(3, "制式模板与机器生成特征复核", text))
+
+    text = render()
+    records.append(review(4, "设计取舍原因与边界情形复核", text))
+
+    for round_no in range(5, 7):
         issues = records[-1]["issues"]
         if not issues:
             break
-        text = render_manual_canonical(software_name, version, industry, users, positioning, core_value, modules, operation_flow, manual_sections, business)
-        records.append(
-            {
-                "round": round_no,
-                "action": "复核仍需模型回到业务理解补写",
-                "issues": manual_quality_issues(text, modules, has_related_documents),
-            }
-        )
+        text = render()
+        records.append(review(round_no, "复核后仍须回到业务理解阶段补写", text))
         break
     return text, records, modules
 
@@ -819,7 +868,9 @@ def write_review_records(out_dir: Path, records: list[dict[str, Any]], modules: 
         if record["issues"]:
             lines.extend(f"- {issue}" for issue in record["issues"])
         else:
-            lines.append("- 未发现需继续修正的问题")
+            lines.append("- 未发现须继续修正的问题")
+        for warning in record.get("warnings") or []:
+            lines.append(f"- WARN：{warning}")
         lines.append("")
     lines.extend(["## 模块清单", ""])
     lines.extend(f"- {module['feature']}" for module in modules)
@@ -837,12 +888,12 @@ def require_confirmed_business(business: dict[str, Any] | None) -> None:
     if business is None:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 操作手册必须基于已确认的业务理解生成。请先生成并确认 草稿/业务理解.md。"
+            "NEXT_ACTION: 操作手册须基于已确认的业务理解生成。须先生成并确认 草稿/业务理解.md。"
         )
     if business.get("confirmation_required") and not business.get("user_confirmed"):
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 业务理解尚未确认。请先确认 草稿/业务理解.md，"
+            "NEXT_ACTION: 业务理解尚未确认。须先确认 草稿/业务理解.md，"
             "再运行 `python3 <SKILL_DIR>/scripts/confirm_stage.py --workdir 软件著作权申请资料 --stage business --note \"<用户确认内容>\"`。"
         )
 
@@ -865,13 +916,22 @@ def main() -> None:
     print(f"OK manual draft: {out_path}")
     print(f"OK manual self-review: {out_dir / '操作手册自检记录.md'}")
     for record in records:
-        print(f"Review round {record['round']}: {record['action']} issues={len(record['issues'])}")
+        print(
+            f"Review round {record['round']}: {record['action']} "
+            f"issues={len(record['issues'])} warnings={len(record.get('warnings') or [])}"
+        )
+    for warning in records[-1].get("warnings") or []:
+        print(f"WARN: {warning}")
     if records[-1]["issues"]:
         print("STOP_FOR_USER")
-        print("NEXT_ACTION: 操作手册自检仍有问题。请回到业务理解阶段补全 manual_modules 中的真实页面内容、操作规则和结果反馈后再重新生成。")
+        print(
+            "NEXT_ACTION: 操作手册自检仍存在问题。操作手册正文由模型撰写，生成环节不作改写。"
+            "须回到业务理解阶段，按自检记录逐条重写 manual_overview、manual_feature_highlights "
+            "或对应模块的 body，再重新生成。"
+        )
         raise SystemExit(1)
     print("STOP_FOR_USER")
-    print("NEXT_ACTION: 请一次性确认完整操作手册草稿是否符合真实业务；必要时先统一修改段落内容，再运行 confirm_stage.py --stage markdown。")
+    print("NEXT_ACTION: 须一次性确认完整操作手册草稿是否符合真实业务。必要时先统一修改段落内容，再运行 confirm_stage.py --stage markdown。")
 
 
 if __name__ == "__main__":

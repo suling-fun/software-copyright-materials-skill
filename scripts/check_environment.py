@@ -37,9 +37,9 @@ def check_environment(skill_dir: Path) -> dict[str, Any]:
     final_docx_mode = "python-docx" if python_docx else ("pandoc" if pandoc_ok else "basic-ooxml")
     requires_user_input = not python_docx and not pandoc_ok
     next_action = (
-        "python-docx 和 pandoc 均不可用，请选择：1) 安装 python-docx（pip install python-docx）；2) 使用基础 DOCX 兜底继续。回复选择后再进入项目分析。"
+        "python-docx 与 pandoc 均不可用。请在以下两项中作出选择：1) 安装 python-docx（pip install python-docx）；2) 采用基础 DOCX 缺省生成方式继续。选择确定后方可进入项目分析。"
         if requires_user_input
-        else "DOCX 生成环境可用，可以进入项目分析。"
+        else "DOCX 生成环境可用，可进入项目分析。"
     )
     return {
         "output_directory": "当前目录/软件著作权申请资料",
@@ -58,14 +58,14 @@ def check_environment(skill_dir: Path) -> dict[str, Any]:
         },
         "final_docx_mode": final_docx_mode,
         "recommendation": (
-            "python-docx 可用，将使用 python-docx 生成规范的 Word 文档。"
+            "python-docx 可用，将采用 python-docx 生成符合规范的 Word 文档。"
             if python_docx
-            else "python-docx 不可用，将使用 pandoc 或基础 OOXML 兜底生成 Word 文档；建议安装 python-docx 以获得更规范的排版控制（pip install python-docx）。"
+            else "python-docx 不可用，将采用 pandoc 或基础 OOXML 方式缺省生成 Word 文档。建议安装 python-docx，以获得更规范的排版控制（pip install python-docx）。"
         ),
         "install_prompt": (
-            "是否安装 python-docx？安装后文档生成更规范；不安装也可以继续用 pandoc 或基础 DOCX 兜底生成。"
+            "是否安装 python-docx。安装后文档生成更为规范；不安装亦可继续，将采用 pandoc 或基础 DOCX 方式缺省生成。"
             if not python_docx
-            else "无需安装，python-docx 已可用。"
+            else "无须安装，python-docx 已可用。"
         ),
         "requires_user_input": requires_user_input,
         "confirmation_stage": "environment" if requires_user_input else None,
@@ -90,7 +90,7 @@ def write_markdown(path: Path, data: dict[str, Any]) -> None:
         f"- pandoc 预览：{'可用' if caps['pandoc_preview'] else '不可用'}（{data['versions']['pandoc']}）",
         f"- 操作视频抽帧（ffmpeg + ffprobe）：{'可用' if caps['operation_video_frames'] else '不可用'}（ffmpeg: {data['versions']['ffmpeg']}；ffprobe: {data['versions']['ffprobe']}）",
         "",
-        "操作视频抽帧能力只在用户选择提供操作视频时才需要；不提供视频不受影响，仍可使用当前环境中任一具备浏览器操作和截图能力的工具，或由用户自行提供截图。",
+        "操作视频抽帧能力仅在用户选择提供操作视频时需要。不提供视频不影响后续流程，仍可使用当前环境中任一具备浏览器操作与截图能力的工具，或由用户自行提供截图。",
         "",
         "## 建议",
         "",
@@ -100,7 +100,7 @@ def write_markdown(path: Path, data: dict[str, Any]) -> None:
         "",
         data["install_prompt"],
         "",
-        "如果 python-docx 和 pandoc 均不可用，必须先等待用户选择，并记录 `environment` 门禁后再继续。",
+        "python-docx 与 pandoc 均不可用时，须先等待用户作出选择，并记录 `environment` 门禁，方可继续。",
         "",
         "```text" if data.get("requires_user_input") else "",
         "STOP_FOR_USER" if data.get("requires_user_input") else "",

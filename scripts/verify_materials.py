@@ -72,9 +72,9 @@ IMAGE_SIZE_TOLERANCE_IN = 0.05
 # ---------------------------------------------------------------------------
 # 编造 / 套话黑名单
 #
-# 这些短语曾经是脚本自己硬编码生成的、与具体项目无关的模板套话，或是模型在
-# 操作手册正文里编造插入的内容。一旦在最终正式文档里再次发现，说明可能又出现
-# 了同类回归。以后踩到新的同类问题，把新短语加进对应列表即可，不需要改检查逻辑。
+# 下列短语曾由生成环节硬编码产出，与具体项目无关，属模板套话；或系模型在操作
+# 手册正文中编造插入的内容。一旦在最终正式文档中再次出现，即表明可能发生同类
+# 回归。后续遇到同类问题，将新短语加入对应列表即可，无须改动检查逻辑。
 #
 # 无条件黑名单：任何时候出现都判定为问题。
 UNCONDITIONAL_BLACKLIST_PHRASES = [
@@ -83,9 +83,9 @@ UNCONDITIONAL_BLACKLIST_PHRASES = [
 ]
 
 # 条件黑名单：这几个词本身是常见的软件工程文档术语（总体设计说明书、详细设计
-# 说明书、测试案例……），只有在业务理解里明确没有提供 related_documents（即
-# 操作手册不太可能合理引用这些文档标题）时，才当作套话处理；一旦业务理解提供了
-# 真实存在、名字恰好包含这几个词的相关文档，就不应该误报。
+# 说明书、测试案例……）。只有在业务理解里没有把它们写进 manual_extra_sections
+# 所声明的章节时，才当作套话处理；模型在 manual_extra_sections 中声明并给出
+# evidence 的章节，其正文出现这几个词属正常引用。
 CONDITIONAL_BLACKLIST_PHRASES = [
     "总体设计",
     "详细设计",
@@ -94,6 +94,19 @@ CONDITIONAL_BLACKLIST_PHRASES = [
 
 # 截图跳过时允许存在的占位字样；非跳过状态下出现即视为异常残留。
 SCREENSHOT_PLACEHOLDER_TERMS = ["截图预留", "截图缺失", "截图无法插入"]
+
+# 截图方式的历史取值，与当前取值语义一一对应，读取旧的 截图方式确认.json 时按此对齐。
+LEGACY_SCREENSHOT_METHODS = {
+    "chrome-devtools": "browser-automation",
+    "computer-use": "desktop-automation",
+}
+
+
+def normalize_screenshot_method(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip().lower()
+    return LEGACY_SCREENSHOT_METHODS.get(text, text or value)
 
 # 申请表信息.txt 全文级别的未确认残留字样。
 UNCONFIRMED_TERMS = ["待用户确认", "待补充"]
@@ -343,7 +356,7 @@ def check_placeholder_residue(workdir: Path, app_txt: Path | None, manual_docx: 
     screenshot_method = None
     if screenshot_json.exists():
         try:
-            screenshot_method = read_json(screenshot_json).get("screenshot_method")
+            screenshot_method = normalize_screenshot_method(read_json(screenshot_json).get("screenshot_method"))
         except Exception:
             screenshot_method = None
 
@@ -363,6 +376,28 @@ def check_placeholder_residue(workdir: Path, app_txt: Path | None, manual_docx: 
         )
 
 
+MANUAL_HEADING_RE = re.compile(r"^\s*(?:\(\d+\)|[零一二三四五六七八九十百]+)、\s*(.+?)\s*$")
+
+
+def manual_sections_containing(manual_text: str, phrase: str) -> list[str]:
+    """Return the titles of the chapters whose body contains `phrase`.
+
+    章节边界按正文里的中文大写序号标题行切分；出现在任何标题之前的文字归入空标题。
+    """
+    owners: list[str] = []
+    current = ""
+    for line in manual_text.splitlines():
+        heading = MANUAL_HEADING_RE.match(line)
+        if heading:
+            current = heading.group(1)
+            if phrase in current:
+                owners.append(current)
+            continue
+        if phrase in line:
+            owners.append(current)
+    return owners
+
+
 def check_fabricated_phrases(workdir: Path, manual_docx: Path | None) -> None:
     check_name = "5. 编造/套话内容检测"
     if manual_docx is None:
@@ -378,31 +413,47 @@ def check_fabricated_phrases(workdir: Path, manual_docx: Path | None) -> None:
         record(f"{check_name} / 固定黑名单", "PASS", "操作手册正文未发现固定黑名单套话")
 
     business_path = workdir / "草稿" / "业务理解.json"
-    related_documents = None
+    extra_section_titles: list[str] = []
     if business_path.exists():
         try:
-            related_documents = read_json(business_path).get("related_documents")
+            business = read_json(business_path)
         except Exception:
-            related_documents = None
+            business = {}
+        raw_extra = business.get("manual_extra_sections")
+        if isinstance(raw_extra, list):
+            extra_section_titles = [
+                str(item.get("title") or "").strip()
+                for item in raw_extra
+                if isinstance(item, dict) and str(item.get("title") or "").strip()
+            ]
 
     cond_check = f"{check_name} / 条件黑名单（总体设计/详细设计/测试案例）"
-    if related_documents:
-        record(
-            cond_check,
-            "PASS",
-            f"业务理解.json 提供了 related_documents={related_documents!r}，视为真实存在的相关文档引用，跳过本项检测",
-        )
-        return
+    undeclared: list[str] = []
+    declared: list[str] = []
+    for phrase in CONDITIONAL_BLACKLIST_PHRASES:
+        if phrase not in manual_text:
+            continue
+        owners = sorted(set(manual_sections_containing(manual_text, phrase)))
+        if owners and all(owner in extra_section_titles for owner in owners):
+            declared.append(f"{phrase}（位于自定章节：{'、'.join(owners)}）")
+        else:
+            undeclared.append(phrase)
 
-    hit2 = [p for p in CONDITIONAL_BLACKLIST_PHRASES if p in manual_text]
-    if hit2:
+    if undeclared:
         record(
             cond_check,
             "FAIL",
-            f"业务理解.json 未提供 related_documents 字段，但操作手册正文含有疑似套话：{hit2}",
+            "下列字样未处于 manual_extra_sections 所声明的章节范围内，"
+            f"操作手册正文含有疑似套话：{undeclared}",
+        )
+    elif declared:
+        record(
+            cond_check,
+            "PASS",
+            f"相关字样均位于 manual_extra_sections 声明的章节内，视为模型已声明并附证据的正常引用：{declared}",
         )
     else:
-        record(cond_check, "PASS", "业务理解.json 未提供 related_documents，且操作手册正文未发现总体设计/详细设计/测试案例字样")
+        record(cond_check, "PASS", "操作手册正文未发现总体设计/详细设计/测试案例字样")
 
 
 def check_screenshot_dimensions(manual_docx: Path | None) -> None:
@@ -411,7 +462,7 @@ def check_screenshot_dimensions(manual_docx: Path | None) -> None:
         record(check_name, "WARN", "操作手册 docx 缺失（已在文件完整性检查中报告），跳过截图尺寸检测")
         return
     if not DOCX_AVAILABLE:
-        record(check_name, "WARN", "python-docx 不可用，跳过截图宽高检测（该检查依赖 python-docx 的 inline_shapes API，无法用 zipfile 兜底）")
+        record(check_name, "WARN", "python-docx 不可用，跳过截图宽高检测。该检查依赖 python-docx 的 inline_shapes API，无法改由 zipfile 缺省实现")
         return
 
     try:
@@ -422,7 +473,7 @@ def check_screenshot_dimensions(manual_docx: Path | None) -> None:
 
     shapes = list(doc.inline_shapes)
     if not shapes:
-        record(check_name, "WARN", f"{manual_docx.name} 中未发现任何内嵌图片（inline_shapes 为空）；如果操作手册应含截图，请人工核实是否漏插")
+        record(check_name, "WARN", f"{manual_docx.name} 中未发现任何内嵌图片（inline_shapes 为空）。若操作手册应含截图，须人工核实是否存在漏插")
         return
 
     problems: list[str] = []
@@ -465,11 +516,11 @@ def check_field_lengths(app_fields: dict[str, str]) -> None:
             record(sub_check, "FAIL", "字段缺失或为空")
             continue
         if "待用户确认" in value:
-            record(sub_check, "WARN", "字段仍含「待用户确认」，跳过长度校验（应已在第 4 项占位符残留检测中报错）")
+            record(sub_check, "WARN", "字段仍含「待用户确认」，跳过长度校验。该情形应已在第 4 项占位符残留检测中报出")
             continue
 
         length = effective_len(value)
-        bound_text = f"{min_chars}~{max_chars} 字" if min_chars else f"≤{max_chars} 字符"
+        bound_text = f"{min_chars} 至 {max_chars} 字" if min_chars else f"≤{max_chars} 字符"
         if min_chars and length < min_chars:
             record(sub_check, "FAIL", f"有效字符数（去空格/换行）为 {length}，低于下限 {min_chars}；限制为 {bound_text}")
         elif length > max_chars:
@@ -506,7 +557,7 @@ def check_gates(workdir: Path) -> None:
             record(
                 env_gate_check,
                 "FAIL",
-                "环境检查.json 显示 requires_user_input=true（python-docx 和 pandoc 均不可用），"
+                "环境检查.json 显示 requires_user_input=true（python-docx 与 pandoc 均不可用），"
                 f"但 {env_confirm_path} 缺失或未记录 environment_confirmed=true",
             )
     else:
@@ -550,9 +601,9 @@ def render_report() -> tuple[str, dict[str, int]]:
     lines.append(f"**汇总：通过 {counts['PASS']} 项、失败 {counts['FAIL']} 项、警告 {counts['WARN']} 项。**")
     lines.append("")
     lines.append(
-        "本报告仅覆盖可程序化判断的项目。代码真实性、业务真实性、截图匹配度等必须由"
-        "独立 agent/人工核实的项目，见 `references/verification_checklist.md` 第二部分，"
-        "本脚本无法也不应替代。"
+        "本报告仅覆盖可程序化判断的项目。代码真实性、业务真实性、截图匹配度等须由"
+        "独立 agent 或人工核实的项目，见 `references/verification_checklist.md` 第二部分，"
+        "本项校验无法亦不应替代该部分工作。"
     )
     return "\n".join(lines), counts
 
@@ -562,7 +613,7 @@ def render_report() -> tuple[str, dict[str, int]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="软著正式材料交付前程序化校验")
-    parser.add_argument("--workdir", default="软件著作权申请资料", help="skill 输出目录（默认 软件著作权申请资料）")
+    parser.add_argument("--workdir", default="软件著作权申请资料", help="skill 输出目录（默认为 软件著作权申请资料）")
     args = parser.parse_args()
 
     workdir = Path(args.workdir)

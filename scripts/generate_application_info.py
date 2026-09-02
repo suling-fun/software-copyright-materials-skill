@@ -300,13 +300,13 @@ def build_fields(
             or manifest.get("selected_source_line_count")
             or "待用户确认"
         ),
-        "开发目的": (business.get("application_purpose") or f"待用户确认（≤50字符，需说明开发目的，不能只写软件名称）") if business else "待用户确认（≤50字符，需说明开发目的，不能只写软件名称）",
+        "开发目的": (business.get("application_purpose") or f"待用户确认（≤50字符，须说明开发目的，不得仅写软件名称）") if business else "待用户确认（≤50字符，须说明开发目的，不得仅写软件名称）",
         "面向领域 / 行业": (business.get("industry") or "待用户确认") if business else "待用户确认",
         "软件的主要功能": (business.get("main_functions") or summarize_features(analysis, software_name, business)) if business else summarize_features(analysis, software_name, business),
         "软件的技术特点": (business.get("technical_characteristics") or f"系统采用{framework_text}构建前端界面，结合模块化组件、路由组织、接口封装和状态管理实现业务功能") if business else f"系统采用{framework_text}构建前端界面，结合模块化组件、路由组织、接口封装和状态管理实现业务功能",
-        # 页数口径为“代码鉴别材料实际页数”：优先取按完整文件边界对齐裁剪后的实际渲染页数
+        # 页数口径为「代码鉴别材料实际页数」：优先取按完整文件边界对齐裁剪后的实际渲染页数
         # （rendered_pages）；仅当该字段缺失（旧版本产物或未生成该字段）时回退到理论总页数
-        # （total_pages，即不做前30页+后30页裁剪时的总页数）。两者在“全部代码”模式下相等。
+        # （total_pages，即不作前 30 页与后 30 页裁剪时的总页数）。两者在「全部代码」模式下相等。
         "页数": str(manifest.get("rendered_pages") or manifest.get("total_pages") or "待用户确认"),
     }
     defaults.update({k: v for k, v in answers.items() if v})
@@ -574,7 +574,7 @@ def infer_runtime_support(analysis: dict[str, Any], project: Path) -> str:
 
 
 def write_application_md(path: Path, fields: dict[str, str], analysis: dict[str, Any], manifest: dict[str, Any], business: dict[str, Any] | None = None) -> None:
-    # 兜底：未发表时首次发表日期不应输出"待用户确认"，直接留空
+    # 未发表时，首次发表日期不应输出「待用户确认」，此处直接留空
     publish_status = fields.get("发表状态", "")
     if "未发表" in publish_status and "已发表" not in publish_status:
         if "待用户确认" in (fields.get("首次发表日期") or "") or not (fields.get("首次发表日期") or "").strip():
@@ -603,9 +603,9 @@ def write_application_md(path: Path, fields: dict[str, str], analysis: dict[str,
     if main_func and "待用户确认" not in main_func:
         func_len = len(str(main_func).replace(" ", "").replace("\n", ""))
         if func_len < MIN_MAIN_FUNCTION_CHARS:
-            warnings.append(f"软件的主要功能仅有 {func_len} 字，应不少于 {MIN_MAIN_FUNCTION_CHARS} 字。请扩写功能说明。")
+            warnings.append(f"软件的主要功能仅有 {func_len} 字，应不少于 {MIN_MAIN_FUNCTION_CHARS} 字，须扩写功能说明。")
         elif func_len > MAX_MAIN_FUNCTION_CHARS:
-            warnings.append(f"软件的主要功能共 {func_len} 字，超过建议上限 {MAX_MAIN_FUNCTION_CHARS} 字。请精简。")
+            warnings.append(f"软件的主要功能共 {func_len} 字，超过建议上限 {MAX_MAIN_FUNCTION_CHARS} 字，须予精简。")
 
     # Check character limits for fields with ≤50 or ≤100 constraints
     char_limit_fields = {
@@ -622,30 +622,30 @@ def write_application_md(path: Path, fields: dict[str, str], analysis: dict[str,
     for field_name, limit in char_limit_fields.items():
         value = fields.get(field_name, "")
         if value and "待用户确认" not in value and len(value) > limit:
-            warnings.append(f"{field_name}共 {len(value)} 字符，超过限制 {limit} 字符。请精简。")
+            warnings.append(f"{field_name}共 {len(value)} 字符，超过限制 {limit} 字符，须予精简。")
 
     lines.extend(
         [
             "",
             "## 字段填写口径",
             "",
-            "- 软件全称：必须由用户确认；最终正式资料文件名、代码页眉和操作手册中的软件名称均以本字段为准。",
-            "- 软件简称：可选；如有常用简称则填写。",
-            "- 版本号：必须由用户确认；如果项目版本小于 V1.0，软著首次提交通常建议使用 V1.0，也可按实际项目版本填写，最终以本字段为准。",
+            "- 软件全称：须由用户确认。最终正式资料文件名、代码页眉与操作手册中的软件名称均以本字段为准。",
+            "- 软件简称：可选，如有常用简称则填写。",
+            "- 版本号：须由用户确认。项目版本小于 V1.0 时，软著首次提交通常建议使用 V1.0，亦可按实际项目版本填写，最终以本字段为准。",
             "- 软件分类：应用软件/嵌入式软件/中间件/系统软件/其他。",
-            "- 开发完成日期、首次发表日期：必须使用 YYYY-MM-DD 格式。",
+            "- 开发完成日期、首次发表日期：须使用 YYYY-MM-DD 格式。",
             "- 开发方式：单独开发/合作开发/委托开发/下达任务开发。",
             "- 软件说明：原创 / 修改（含翻译软件、合成软件）。",
-            "- 发表状态：已发表或未发表；已发表需附首次发表日期。",
+            "- 发表状态：已发表或未发表。已发表时须附首次发表日期。",
             "- 软件开发环境 / 开发工具：≤50字符，格式 `开发环境: <OS>/开发工具: <IDE名称>`。",
             "- 开发该软件的操作系统：≤50字符，填写实际开发电脑的操作系统版本。",
             "- 该软件的运行平台 / 操作系统：≤50字符，填写软件运行所在的操作系统或浏览器环境。",
             "- 软件运行支撑环境 / 支持软件：≤50字符，直接列出运行依赖（如 Node.js、npm、浏览器），不加格式前缀。",
-            "- 开发的硬件环境和运行的硬件环境：≤50字符，可使用检测到的电脑配置作为建议值。",
-            "- 源程序量：纯数字（不含'行'字），指全部源程序的总行数。",
-            "- 开发目的：≤50字符，用一句话说明目的，不能只写软件名称。",
+            "- 开发的硬件环境与运行的硬件环境：≤50字符，可采用检测到的本机配置作为建议值。",
+            "- 源程序量：纯数字（不含「行」字），指全部源程序的总行数。",
+            "- 开发目的：≤50字符，以一句话说明开发目的，不得仅写软件名称。",
             "- 面向领域 / 行业：≤50字符。",
-            "- 软件的主要功能：500~1300字。",
+            "- 软件的主要功能：500 至 1300 字。",
             "- 软件的技术特点：多选标签（APP/游戏软件/教育软件/金融软件/医疗软件/地理信息软件/云计算软件/信息安全软件/大数据软件/人工智能软件/VR软件/5G软件/小程序/物联网软件/智慧城市软件）+ 文本描述≤100字符。",
             "",
             "## 项目分析摘要",
@@ -656,7 +656,7 @@ def write_application_md(path: Path, fields: dict[str, str], analysis: dict[str,
             f"- 源程序量（含空行）：{analysis.get('source', {}).get('total_line_count', analysis.get('source', {}).get('line_count', 0))}",
             f"- 代码材料页数：{manifest.get('rendered_pages') or manifest.get('total_pages', 0)}",
             f"- 代码输出模式：{manifest.get('mode', '')}",
-            f"- 业务理解：{'已读取 草稿/业务理解.json' if business else '未提供，使用项目分析兜底'}",
+            f"- 业务理解：{'已读取 草稿/业务理解.json' if business else '未提供，以项目分析结果缺省生成'}",
             "",
             "## 待确认字段",
             "",
@@ -676,7 +676,7 @@ def write_application_md(path: Path, fields: dict[str, str], analysis: dict[str,
             "",
             "```text",
             "STOP_FOR_USER",
-            "NEXT_ACTION: 请补全并确认申请表字段；确认后运行 confirm_stage.py --stage application-fields。",
+            "NEXT_ACTION: 须补全并确认申请表字段。确认后运行 confirm_stage.py --stage application-fields。",
             "```",
         ]
     )
@@ -687,12 +687,12 @@ def require_confirmed_business(business: dict[str, Any] | None) -> None:
     if business is None:
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 申请表信息必须基于已确认的业务理解生成。请先生成并确认 草稿/业务理解.md。"
+            "NEXT_ACTION: 申请表信息须基于已确认的业务理解生成。须先生成并确认 草稿/业务理解.md。"
         )
     if business.get("confirmation_required") and not business.get("user_confirmed"):
         raise SystemExit(
             "STOP_FOR_USER\n"
-            "NEXT_ACTION: 业务理解尚未确认。请先确认 草稿/业务理解.md，"
+            "NEXT_ACTION: 业务理解尚未确认。须先确认 草稿/业务理解.md，"
             "再运行 `python3 <SKILL_DIR>/scripts/confirm_stage.py --workdir 软件著作权申请资料 --stage business --note \"<用户确认内容>\"`。"
         )
 
@@ -720,7 +720,7 @@ def main() -> None:
     write_application_md(out_path, fields, analysis, manifest, business)
     print(f"OK application draft: {out_path}")
     print("STOP_FOR_USER")
-    print("NEXT_ACTION: 请补全并确认申请表字段；确认后运行 confirm_stage.py --stage application-fields。")
+    print("NEXT_ACTION: 须补全并确认申请表字段。确认后运行 confirm_stage.py --stage application-fields。")
 
 
 if __name__ == "__main__":

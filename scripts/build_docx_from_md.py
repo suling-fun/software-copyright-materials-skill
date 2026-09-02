@@ -92,31 +92,31 @@ def confirmation_issues(workdir: Path) -> list[str]:
 
     business = read_json_if_exists(draft_dir / "业务理解.json")
     if not business or not business.get("user_confirmed"):
-        issues.append("业务理解尚未确认：请确认 草稿/业务理解.md 后记录 `business` 门禁")
+        issues.append("业务理解尚未确认：须确认 草稿/业务理解.md 后记录 `business` 门禁")
 
     selection = read_json_if_exists(draft_dir / "代码文件选择.json")
     if not selection or not selection.get("user_confirmed"):
-        issues.append("代码文件选择尚未确认：请确认 草稿/代码文件选择.json 后记录 `code-selection` 门禁")
+        issues.append("代码文件选择尚未确认：须确认 草稿/代码文件选择.json 后记录 `code-selection` 门禁")
 
     screenshot = read_json_if_exists(workdir / "截图方式确认.json")
     if not screenshot.get("screenshot_method_confirmed"):
-        issues.append("截图方式尚未确认：请选择截图方式后记录 `screenshot-method` 门禁")
+        issues.append("截图方式尚未确认：须先选定截图方式，再记录 `screenshot-method` 门禁")
 
     app_md = draft_dir / "申请表信息.md"
     if app_md.exists():
         _, warnings = parse_application_lines(app_md)
         if warnings:
-            issues.append("申请表信息仍包含“待用户确认”字段")
+            issues.append("申请表信息仍包含「待用户确认」字段")
     else:
         issues.append("缺少 草稿/申请表信息.md")
 
     app_confirmation = read_json_if_exists(draft_dir / "申请表字段确认.json")
     if not app_confirmation.get("application_fields_confirmed"):
-        issues.append("申请表字段尚未确认：请补全字段后记录 `application-fields` 门禁")
+        issues.append("申请表字段尚未确认：须补全字段后记录 `application-fields` 门禁")
 
     markdown_confirmation = read_json_if_exists(draft_dir / "最终生成确认.json")
     if not markdown_confirmation.get("markdown_confirmed"):
-        issues.append("Markdown 草稿尚未最终确认：请确认全部草稿后记录 `markdown` 门禁")
+        issues.append("Markdown 草稿尚未最终确认：须确认全部草稿后记录 `markdown` 门禁")
 
     return issues
 
@@ -368,7 +368,7 @@ def add_toc_field(document: Any) -> None:
     separate.set(qn("w:fldCharType"), "separate")
     placeholder = OxmlElement("w:t")
     placeholder.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-    placeholder.text = "请在 Word 中右键选择“更新域”以生成目录"
+    placeholder.text = "请在 Word 中右键选择「更新域」以生成目录"
     end = OxmlElement("w:fldChar")
     end.set(qn("w:fldCharType"), "end")
 
@@ -1086,13 +1086,13 @@ def build_all(workdir: Path, software_name: str, version: str) -> dict[str, Any]
     screenshot_method = screenshot_confirmation.get("screenshot_method")
     screenshot_manifest = workdir / "截图/截图清单.json"
     if screenshot_method == "skip":
-        warnings.append("用户选择暂不截图；操作手册已保留截图预留位置")
+        warnings.append("用户选择暂不截图，操作手册已保留截图预留位置")
     elif screenshot_method and not screenshot_manifest.exists():
-        warnings.append("操作手册截图未生成或未插入；操作手册应保留截图预留位置")
+        warnings.append("操作手册截图未生成或未插入，操作手册应保留截图预留位置")
     elif screenshot_manifest.exists():
         screenshots = read_json_if_exists(screenshot_manifest).get("screenshots") or []
         if not screenshots:
-            warnings.append("操作手册截图清单为空；操作手册应保留截图预留位置")
+            warnings.append("操作手册截图清单为空，操作手册应保留截图预留位置")
 
     app_txt, app_warnings = write_application_txt(draft_dir, final_dir)
     if app_txt:
@@ -1165,7 +1165,7 @@ def main() -> None:
     issues = confirmation_issues(workdir)
     if issues:
         print("STOP_FOR_USER")
-        print("NEXT_ACTION: 正式 Word/TXT 生成前必须完成以下确认：")
+        print("NEXT_ACTION: 正式 Word/TXT 生成前须完成以下确认：")
         for issue in issues:
             print(f"- {issue}")
         raise SystemExit(2)
