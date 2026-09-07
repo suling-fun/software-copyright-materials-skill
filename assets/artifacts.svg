@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" width="960" height="470" role="img" aria-label="三份交付材料的版式示意：代码鉴别材料、操作手册、申请表信息">
+  <style>
+    :root { color-scheme: light dark; }
+    .bg { fill: #ffffff; }
+    .card { fill: #ffffff; stroke: #d0d7de; stroke-width: 1.5; }
+    .rule { stroke: #d0d7de; stroke-width: 1; }
+    .head { fill: #57606a; font: 500 11px ui-sans-serif, system-ui, "PingFang SC", sans-serif; }
+    .title { fill: #1f2328; font: 600 14px ui-sans-serif, system-ui, "PingFang SC", sans-serif; }
+    .body { fill: #57606a; font: 400 11px ui-sans-serif, system-ui, "PingFang SC", sans-serif; }
+    .mono { fill: #6e7781; font: 400 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .note { fill: #6e7781; font: 400 11px ui-sans-serif, system-ui, "PingFang SC", sans-serif; }
+    .tag { fill: #0969da; font: 500 10px ui-sans-serif, system-ui, "PingFang SC", sans-serif; }
+    .line { stroke: #8c959f; stroke-width: 5; stroke-linecap: round; opacity: .35; }
+    .shot { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1; }
+    .accent { fill: #0969da; opacity: .12; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .card { fill: #161b22; stroke: #30363d; }
+      .rule { stroke: #30363d; }
+      .head, .body, .note { fill: #8b949e; }
+      .title { fill: #e6edf3; }
+      .mono { fill: #8b949e; }
+      .tag { fill: #58a6ff; }
+      .shot { fill: #0d1117; stroke: #30363d; }
+      .accent { fill: #58a6ff; opacity: .14; }
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="960" height="470"/>
+
+  <!-- 代码鉴别材料 -->
+  <text class="title" x="40" y="34">程序鉴别材料</text>
+  <text class="note" x="40" y="52">前 30 页 + 后 30 页，共 60 页</text>
+  <rect class="card" x="40" y="66" width="250" height="330" rx="4"/>
+  <text class="head" x="56" y="88">软件全称 V1.0</text>
+  <text class="head" x="274" y="88" text-anchor="end">第 1 页</text>
+  <line class="rule" x1="56" y1="96" x2="274" y2="96"/>
+  <text class="mono" x="56" y="114">// File: main.js</text>
+  <text class="mono" x="56" y="128">const { app, BrowserWindow } = require(...)</text>
+  <text class="mono" x="56" y="142">const path = require('path');</text>
+  <text class="mono" x="56" y="156">function createWindow() {</text>
+  <text class="mono" x="56" y="170">  const win = new BrowserWindow({</text>
+  <text class="mono" x="56" y="184">    width: 1200, height: 800,</text>
+  <text class="mono" x="56" y="198">    webPreferences: { preload }</text>
+  <text class="mono" x="56" y="212">  });</text>
+  <text class="mono" x="56" y="226">  win.loadFile('src/index.html');</text>
+  <text class="mono" x="56" y="240">}</text>
+  <text class="mono" x="56" y="254">/* 窗口尺寸取自上次退出时的记录 */</text>
+  <text class="mono" x="56" y="268">app.whenReady().then(createWindow);</text>
+  <text class="mono" x="56" y="282">ipcMain.handle('task:start', async () =&gt; {</text>
+  <text class="mono" x="56" y="296">  return startTask(config);</text>
+  <text class="mono" x="56" y="310">});</text>
+  <line class="rule" x1="56" y1="326" x2="274" y2="326"/>
+  <text class="note" x="56" y="344">每页 50 行，切分点对齐完整文件边界</text>
+  <text class="note" x="56" y="362">不截断任何文件与函数</text>
+  <text class="tag" x="56" y="384">清单记录有效代码行与注释行占比</text>
+
+  <!-- 操作手册 -->
+  <text class="title" x="330" y="34">文档鉴别材料（操作手册）</text>
+  <text class="note" x="330" y="52">必备六章 + 模型判定的项目自定章节</text>
+  <rect class="card" x="330" y="66" width="250" height="330" rx="4"/>
+  <text class="head" x="346" y="88">软件全称 V1.0</text>
+  <text class="head" x="564" y="88" text-anchor="end">第 6 页</text>
+  <line class="rule" x1="346" y1="96" x2="564" y2="96"/>
+  <text class="title" x="346" y="118">六、任务看板</text>
+  <line class="line" x1="346" y1="134" x2="562" y2="134"/>
+  <line class="line" x1="346" y1="146" x2="558" y2="146"/>
+  <line class="line" x1="346" y1="158" x2="540" y2="158"/>
+  <line class="line" x1="346" y1="176" x2="562" y2="176"/>
+  <line class="line" x1="346" y1="188" x2="520" y2="188"/>
+  <rect class="shot" x="346" y="206" width="218" height="96" rx="3"/>
+  <rect class="accent" x="358" y="218" width="194" height="14" rx="2"/>
+  <rect class="accent" x="358" y="240" width="120" height="10" rx="2"/>
+  <rect class="accent" x="358" y="258" width="160" height="10" rx="2"/>
+  <text class="note" x="346" y="320">图 6-1 看板在无任务时的空状态</text>
+  <line class="rule" x1="346" y1="336" x2="564" y2="336"/>
+  <text class="note" x="346" y="354">正文 120 至 400 字，覆盖入口、动作、</text>
+  <text class="note" x="346" y="370">规则、反馈、取舍原因与边界情形</text>
+  <text class="tag" x="346" y="384">每幅截图独立编号与图注</text>
+
+  <!-- 申请表信息 -->
+  <text class="title" x="620" y="34">申请表信息</text>
+  <text class="note" x="620" y="52">按官网表单顺序的 25 项字段</text>
+  <rect class="card" x="620" y="66" width="300" height="330" rx="4"/>
+  <text class="body" x="636" y="92">软件全称</text><text class="mono" x="904" y="92" text-anchor="end">某协作看板系统</text>
+  <line class="rule" x1="636" y1="102" x2="904" y2="102"/>
+  <text class="body" x="636" y="122">版本号 / 软件分类</text><text class="mono" x="904" y="122" text-anchor="end">V1.0 / 应用软件</text>
+  <line class="rule" x1="636" y1="132" x2="904" y2="132"/>
+  <text class="body" x="636" y="152">开发完成日期</text><text class="mono" x="904" y="152" text-anchor="end">YYYY-MM-DD</text>
+  <line class="rule" x1="636" y1="162" x2="904" y2="162"/>
+  <text class="body" x="636" y="182">权利取得方式 / 范围</text><text class="mono" x="904" y="182" text-anchor="end">原始取得 / 全部权利</text>
+  <line class="rule" x1="636" y1="192" x2="904" y2="192"/>
+  <text class="body" x="636" y="212">编程语言</text><text class="mono" x="904" y="212" text-anchor="end">预设勾选 + 其他语言</text>
+  <line class="rule" x1="636" y1="222" x2="904" y2="222"/>
+  <text class="body" x="636" y="242">源程序量</text><text class="mono" x="904" y="242" text-anchor="end">纯数字，全部源程序行数</text>
+  <line class="rule" x1="636" y1="252" x2="904" y2="252"/>
+  <text class="body" x="636" y="272">开发目的 / 面向领域</text><text class="mono" x="904" y="272" text-anchor="end">各 ≤ 50 字</text>
+  <line class="rule" x1="636" y1="282" x2="904" y2="282"/>
+  <text class="body" x="636" y="302">软件的主要功能</text><text class="mono" x="904" y="302" text-anchor="end">500 至 1300 字</text>
+  <line class="rule" x1="636" y1="312" x2="904" y2="312"/>
+  <text class="body" x="636" y="332">软件的技术特点</text><text class="mono" x="904" y="332" text-anchor="end">标签 + ≤ 100 字</text>
+  <line class="rule" x1="636" y1="342" x2="904" y2="342"/>
+  <text class="body" x="636" y="362">页数</text><text class="mono" x="904" y="362" text-anchor="end">60</text>
+  <text class="tag" x="636" y="384">字段长度与页数由校验脚本逐项核对</text>
+
+  <text class="note" x="40" y="432">三份材料的软件全称与版本号取自同一处已确认字段；页眉、文件名与申请表「页数」在交付前逐项比对。</text>
+  <text class="note" x="40" y="452">图为版式示意，其中软件名称、代码与字段取值均为虚构示例，不代表任何真实项目。</text>
+</svg>

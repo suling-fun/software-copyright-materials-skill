@@ -100,7 +100,7 @@ def write_markdown(path: Path, data: dict[str, Any]) -> None:
         "",
         data["install_prompt"],
         "",
-        "python-docx 与 pandoc 均不可用时，须先等待用户作出选择，并记录 `environment` 门禁，方可继续。",
+        "python-docx 与 pandoc 均不可用时，须先等待用户作出选择，并记录 `environment` 确认点，方可继续。",
         "",
         "```text" if data.get("requires_user_input") else "",
         "STOP_FOR_USER" if data.get("requires_user_input") else "",

@@ -17,6 +17,19 @@ from common import ensure_dir, read_json, read_text
 MIN_MAIN_FUNCTION_CHARS = 500
 MAX_MAIN_FUNCTION_CHARS = 1300
 
+# 「软件的技术特点」缺失时的待确认占位。口径与「开发目的」一致：含「待用户确认」字样，
+# 可被 verify_materials.py 的 STRICT-全文占位检测拦截，不可能静默进入正式材料。
+TECHNICAL_CHARACTERISTICS_PENDING = (
+    "待用户确认（≤100字符，须说明本软件自身的技术实现要点，"
+    "不得套用通用框架与分层描述）"
+)
+
+
+# 开发工具与运行平台在无任何项目证据时的待确认占位：无证据的确定性断言（例如一律
+# 回答 Visual Studio Code）同样属于编造，交由用户按实际情况填写。
+IDE_PENDING = "待用户确认（填写实际使用的开发工具名称）"
+RUNTIME_OS_PENDING = "待用户确认（≤50字符，填写软件实际运行的操作系统或浏览器环境）"
+
 
 FIELD_ORDER = [
     "软件全称",
@@ -51,210 +64,48 @@ def effective_len(value: str) -> int:
     return len(str(value or "").replace(" ", "").replace("\n", ""))
 
 
-def clean_text(value: Any) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"\s+", " ", text)
-    text = text.replace("`", "").replace("#", "").strip()
-    return text
+# 「软件的主要功能」的待补写口径。此处刻意不提供任何通用功能描述：凡「面向用户业务
+# 场景的综合软件系统」「帮助用户高效完成日常工作」一类句子，换成任意其他软件后同样
+# 成立，属模板套话。以套话替换模型依据真实项目写出的内容，比内容缺失更为有害，故
+# 缺失与不足下限两种情形一律落到待确认占位，由用户回到业务理解补写真实内容。
+MAIN_FUNCTION_MISSING_PENDING = (
+    f"待用户确认（{MIN_MAIN_FUNCTION_CHARS} 至 {MAX_MAIN_FUNCTION_CHARS} 字，"
+    "须逐项写明本软件实际具备的功能、操作方式与处理结果，每一项均须能在项目代码或界面中找到对应证据；"
+    "不得以通用描述、评价性表述或重复语句凑足字数）"
+)
 
 
-def trim_effective(value: str, max_chars: int = MAX_MAIN_FUNCTION_CHARS) -> str:
-    if effective_len(value) <= max_chars:
-        return value
-    result: list[str] = []
-    count = 0
-    for char in value:
-        if char not in (" ", "\n"):
-            count += 1
-        if count > max_chars:
-            break
-        result.append(char)
-    return "".join(result).rstrip("，。；、 ") + "。"
+def main_function_pending_notice(text: str) -> str:
+    """Flag an under-length 主要功能 as pending while keeping the real text intact.
 
-
-def business_feature_pairs(business: dict[str, Any] | None) -> list[tuple[str, str]]:
-    if not business:
-        return []
-    features = business.get("business_features") or []
-    details = business.get("business_feature_details") or {}
-    if not isinstance(features, list):
-        return []
-    if not isinstance(details, dict):
-        details = {}
-    pairs: list[tuple[str, str]] = []
-    for feature in features:
-        name = clean_text(feature)
-        if not name:
-            continue
-        detail = clean_text(details.get(name))
-        pairs.append((name, detail))
-    return pairs
-
-
-def summarize_business_features(software_name: str, business: dict[str, Any] | None) -> str:
-    pairs = business_feature_pairs(business)
-    if not business or not pairs:
-        return ""
-
-    industry = clean_text(business.get("industry"))
-    target_users = business.get("target_users") or []
-    if isinstance(target_users, list):
-        target_text = "、".join(clean_text(item) for item in target_users if clean_text(item))
-    else:
-        target_text = clean_text(target_users)
-    core_value = clean_text(business.get("core_value"))
-    product_positioning = clean_text(business.get("product_positioning"))
-    operation_flow = business.get("operation_flow") or []
-    if isinstance(operation_flow, list):
-        flow_steps = [clean_text(item).rstrip("。") for item in operation_flow if clean_text(item)]
-        flow_text = "，再".join(flow_steps)
-    else:
-        flow_text = clean_text(operation_flow)
-
-    feature_names = "、".join(name for name, _ in pairs[:8])
-    parts: list[str] = []
-    if product_positioning:
-        parts.append(product_positioning.rstrip("。") + "。")
-    else:
-        scope = f"面向{industry}" if industry else "面向实际业务场景"
-        users = f"，服务于{target_text}" if target_text else ""
-        parts.append(f"{software_name}是一套{scope}{users}的应用软件。")
-    parts.append(f"软件主要提供{feature_names}等功能。")
-    if core_value:
-        parts.append(core_value.rstrip("。") + "。")
-
-    for name, detail in pairs[:8]:
-        if detail:
-            detail = detail.rstrip("。")
-            if detail.startswith(("用户", "系统")):
-                parts.append(f"在{name}功能中，{detail}。")
-            else:
-                parts.append(f"{name}功能主要{detail}。")
-        else:
-            parts.append(f"{name}功能支持用户完成相关业务操作，并在处理完成后返回对应结果。")
-
-    if flow_text:
-        parts.append(f"用户通常先{flow_text}，系统在关键步骤提供状态反馈和结果展示。")
-
-    result = "".join(parts)
-    while effective_len(result) < MIN_MAIN_FUNCTION_CHARS:
-        result += (
-            f"围绕{feature_names}等核心功能，软件将用户输入、过程处理、结果查看和资料管理组织在连续的操作流程中，"
-            "用户可以根据页面提示逐步完成业务处理，系统保存必要的数据记录并提供清晰的反馈信息，"
-            "便于用户后续继续查看、复核和调整相关内容。"
-        )
-    return trim_effective(result)
-
-
-def summarize_features(analysis: dict[str, Any], software_name: str, business: dict[str, Any] | None = None) -> str:
-    """Generate a substantive main-function description for the application form.
-
-    When business context JSON provides main_functions it will be used upstream; this
-    function is a fallback that assembles the best available evidence into a multi-
-    paragraph description targeting the 500-1300 Chinese-character window required by the
-    Chinese copyright office.
+    原文逐字保留在占位说明之后，绝不以生成文本替换；返回值含「待用户确认」，
+    可被 verify_materials.py 的 STRICT-全文占位检测拦下，未补写即无法推进到正式材料。
     """
-    business_summary = summarize_business_features(software_name, business)
-    if business_summary:
-        return business_summary
-
-    features = analysis.get("feature_candidates") or []
-    readme = (analysis.get("readme_excerpt") or "").strip()
-    routes = analysis.get("routes") or []
-
-    readable_features = []
-    for feature in features:
-        name = humanize_feature(str(feature))
-        if re.search(r"[A-Za-z]", name):
-            continue
-        if name and name not in readable_features:
-            readable_features.append(name)
-
-    parts: list[str] = []
-
-    # Opening overview paragraph
-    feature_list = "、".join(readable_features[:12]) if readable_features else "信息展示、业务处理、数据管理和系统交互"
-    parts.append(
-        f"{software_name}是一套面向用户业务场景的综合软件系统，"
-        f"主要提供{feature_list}等核心功能模块。"
-        f"系统通过清晰的操作界面和合理的业务流程设计，帮助用户高效完成日常工作和业务协作。"
-    )
-
-    # Module-by-module breakdown
-    detail_parts: list[str] = []
-    for name in readable_features[:8]:
-        skip = {"软件登录", "用户注册", "用户认证", "首页", "数据看板", "系统设置"}
-        if name in skip:
-            continue
-        detail_parts.append(f"{name}模块支持用户进行相关数据的查看、录入和管理操作，提供完整的业务处理能力和结果反馈。")
-
-    if not detail_parts:
-        route_display = [r.strip("/") for r in routes[:6] if r != "/" and not r.startswith("/:")]
-        if route_display:
-            for route_name in route_display[:6]:
-                label = route_name.replace("-", " ").replace("_", " ").title()
-                detail_parts.append(f"{label}模块支持用户进行相关数据的查看、录入和管理操作，提供完整的业务处理能力和结果反馈。")
-        else:
-            detail_parts.append("用户可通过系统界面完成数据查询、信息录入、业务处理和结果导出等操作。")
-            detail_parts.append("系统支持多角色用户的协同工作，不同权限用户可访问相应的功能模块。")
-            detail_parts.append("系统提供数据持久化存储和历史记录追溯能力，保障业务数据的完整性和可审计性。")
-
-    # Limit detail parts to avoid exceeding max length
-    combined = "".join(detail_parts)
-    if len(combined) + len("".join(parts)) > MAX_MAIN_FUNCTION_CHARS:
-        while detail_parts and len("".join(detail_parts)) + len("".join(parts)) > MAX_MAIN_FUNCTION_CHARS:
-            detail_parts.pop()
-
-    parts.extend(detail_parts)
-
-    # Closing paragraph
-    if readme:
-        first_line = readme.splitlines()[0][:80]
-        parts.append(f"系统核心业务围绕{first_line}展开，覆盖从信息采集到结果呈现的完整操作链路。")
-
-    result = "".join(parts)
-
-    while effective_len(result) < MIN_MAIN_FUNCTION_CHARS:
-        padding = (
-            "此外，系统还提供了配套的数据管理、用户操作记录、状态跟踪和系统配置等辅助功能模块，"
-            "各个功能模块之间通过统一的界面布局和操作规范协同运行，用户可以在不同模块间灵活切换和处理跨模块的业务流程。"
-            "系统整体设计注重业务完整性和操作连续性，能够满足用户日常工作中对信息处理和业务管理的核心需求。"
-            "系统界面设计遵循清晰直观的原则，主要操作入口集中展示，用户无需复杂培训即可上手使用。"
-            "系统的数据管理能力包括数据的录入、存储、查询、修改和删除等基本操作，同时支持数据批量处理和导入导出功能。"
-            "在业务处理方面，系统支持多步骤业务流程的串联执行，各环节之间数据自动流转，减少用户重复录入。"
-            "系统还提供了灵活的配置选项，管理员可以根据实际业务需求调整系统参数和功能开关。"
-        )
-        result += padding
-
-    return trim_effective(result)
+    length = effective_len(text)
+    gap = MIN_MAIN_FUNCTION_CHARS - length
+    return (
+        f"待用户确认（现有正文有效字数为 {length} 字，低于下限 {MIN_MAIN_FUNCTION_CHARS} 字，尚缺 {gap} 字。"
+        "须回到 草稿/业务理解.json 的 main_functions，依据本软件的真实功能补写至下限后重新生成；"
+        "补写内容须能在项目代码或界面中找到对应证据，不得以通用描述、评价性表述或重复语句凑足字数。"
+        "以下为现有原文，须在其基础上补写，不得删改）"
+    ) + str(text)
 
 
-def humanize_feature(name: str) -> str:
-    value = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
-    value = value.replace("-", " ").replace("_", " ").strip()
-    key = value.lower().replace(" ", "")
-    mapping = {
-        "login": "软件登录",
-        "register": "用户注册",
-        "auth": "用户认证",
-        "home": "首页",
-        "dashboard": "数据看板",
-        "project": "项目管理",
-        "projects": "项目管理",
-        "projectsettings": "项目设置",
-        "projectssettings": "项目设置",
-        "settings": "系统设置",
-        "asset": "资源管理",
-        "assets": "资源管理",
-        "assethub": "资源中心",
-        "billing": "费用管理",
-        "agentstatusbar": "智能体状态展示",
-        "messagebubble": "消息展示",
-        "chatpanel": "对话面板",
-        "chatinput": "对话输入",
-        "assetpanel": "资源面板",
-    }
-    return mapping.get(key, value.title() if re.search(r"[A-Za-z]", value) else value)
+def normalize_main_function(value: Any) -> str:
+    """Return the 主要功能 field value without ever fabricating content.
+
+    - 缺失：落到待确认占位，与「开发目的」「软件的技术特点」两个字段口径一致。
+    - 不足下限：保留原文，前置待补写说明，标为待确认。
+    - 满足下限：原样返回，不作任何改写。
+    """
+    text = str(value or "")
+    if not text.strip():
+        return MAIN_FUNCTION_MISSING_PENDING
+    if "待用户确认" in text:
+        return text
+    if effective_len(text) < MIN_MAIN_FUNCTION_CHARS:
+        return main_function_pending_notice(text)
+    return text
 
 
 def build_fields(
@@ -265,8 +116,6 @@ def build_fields(
     answers: dict[str, str],
     business: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    frameworks = analysis.get("frameworks") or []
-    framework_text = "、".join(frameworks) if frameworks else "前端工程化框架"
     language = analysis.get("language") or "待用户确认"
     project = Path(analysis.get("project_root") or ".")
     hardware_hint = current_hardware_environment()
@@ -302,8 +151,13 @@ def build_fields(
         ),
         "开发目的": (business.get("application_purpose") or f"待用户确认（≤50字符，须说明开发目的，不得仅写软件名称）") if business else "待用户确认（≤50字符，须说明开发目的，不得仅写软件名称）",
         "面向领域 / 行业": (business.get("industry") or "待用户确认") if business else "待用户确认",
-        "软件的主要功能": (business.get("main_functions") or summarize_features(analysis, software_name, business)) if business else summarize_features(analysis, software_name, business),
-        "软件的技术特点": (business.get("technical_characteristics") or f"系统采用{framework_text}构建前端界面，结合模块化组件、路由组织、接口封装和状态管理实现业务功能") if business else f"系统采用{framework_text}构建前端界面，结合模块化组件、路由组织、接口封装和状态管理实现业务功能",
+        # 主要功能不设通用兜底文案：缺失或不足下限时一律落到待确认占位，且保留模型
+        # 依据真实项目写出的原文，绝不以生成文本替换（见 normalize_main_function）。
+        "软件的主要功能": (business.get("main_functions") if business else ""),
+        # 技术特点不设通用兜底文案：任何「采用某某框架、模块化组件、状态管理」一类描述
+        # 换成任意其他软件后同样成立，属于模板套话，一旦静默进入正式材料即构成空洞申报。
+        # 业务理解未提供该字段时一律落到待确认占位，由用户结合本软件实际实现补写。
+        "软件的技术特点": (business.get("technical_characteristics") or TECHNICAL_CHARACTERISTICS_PENDING) if business else TECHNICAL_CHARACTERISTICS_PENDING,
         # 页数口径为「代码鉴别材料实际页数」：优先取按完整文件边界对齐裁剪后的实际渲染页数
         # （rendered_pages）；仅当该字段缺失（旧版本产物或未生成该字段）时回退到理论总页数
         # （total_pages，即不作前 30 页与后 30 页裁剪时的总页数）。两者在「全部代码」模式下相等。
@@ -311,16 +165,15 @@ def build_fields(
     }
     defaults.update({k: v for k, v in answers.items() if v})
 
-    # 未发表时首次发表日期应为空，不触发待确认门禁
+    # 未发表时首次发表日期应为空，不触发待确认项
     publish_status = defaults.get("发表状态", "")
     if "未发表" in publish_status and "已发表" not in publish_status:
         if "待用户确认" in defaults.get("首次发表日期", "") or not defaults.get("首次发表日期", "").strip():
             defaults["首次发表日期"] = ""
 
-    # 软件的主要功能：确保业务理解提供的内容也满足最低字数
-    main_func = defaults.get("软件的主要功能", "")
-    if main_func and "待用户确认" not in main_func and effective_len(main_func) < MIN_MAIN_FUNCTION_CHARS:
-        defaults["软件的主要功能"] = summarize_features(analysis, software_name, business)
+    # 软件的主要功能：缺失或不足下限时标为待补写，原文一律保留。
+    # 此处同时覆盖业务理解与 --answers 两条来源，两者的处理口径保持一致。
+    defaults["软件的主要功能"] = normalize_main_function(defaults.get("软件的主要功能"))
 
     return defaults
 
@@ -429,7 +282,8 @@ def infer_ide_name(project: Path) -> str:
         return "Visual Studio Code"
     if list(project.glob("*.code-workspace")):
         return "Visual Studio Code"
-    return "Visual Studio Code"
+    # 项目中没有任何 IDE 痕迹时不臆断开发工具：无证据的确定性断言与套话同性质。
+    return IDE_PENDING
 
 
 def infer_runtime_os(analysis: dict[str, Any]) -> str:
@@ -439,7 +293,8 @@ def infer_runtime_os(analysis: dict[str, Any]) -> str:
         return "Windows 10/11 或 macOS 13及以上版本"
     if frameworks & {"Vue", "React", "Vite", "Next.js", "Nuxt", "Svelte", "Astro", "Angular"}:
         return "Windows 10/11 或 macOS 13及以上版本"
-    return "Windows 10/11 或 macOS 13及以上版本"
+    # 既未识别到桌面端框架，也未识别到前端框架时，运行平台无从推断，交由用户填写。
+    return RUNTIME_OS_PENDING
 
 
 def project_file(project: Path, relative: str) -> Path | None:

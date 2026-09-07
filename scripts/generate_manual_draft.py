@@ -113,14 +113,36 @@ AI_TONE_MARKERS = [
 
 REQUIRED_SECTION_TITLES = ["说明", "功能特点", "系统要求", "常见问题解答", "术语表"]
 
+# 模块正文的字数区间。上限自 300 字放宽至 400 字：正文须同时交代入口、动作、规则、
+# 反馈、取舍原因与边界情形，300 字不足以容纳，硬性压缩会逼出「把核对清单原句抄进正文」
+# 这类为通过校验而做的改写，使校验退化为自我印证。
+MODULE_PROSE_MIN_CHARS = 120
+MODULE_PROSE_MAX_CHARS = 400
+
 # manual_modules 中的下列字段为核对清单：模型须将其内容自行写入 `body`，
-# 校验环节据以检查正文有无遗漏，不再用其拼装句子。
+# 校验环节据以检查正文有无遗漏，不再用其拼装句子。核对分两级。
+#
+# REQUIRED —— 缺其一即说明正文没有把这个页面讲清楚，报 issue，须补写正文。
 REQUIRED_MODULE_COVERAGE = (
     ("entry", "真实入口"),
     ("visible_elements", "用户可见元素"),
     ("steps", "主要动作"),
-    ("validation_rules", "输入或状态规则"),
     ("feedback", "结果反馈"),
+)
+
+# ADVISORY —— 这几项未必都适合写进面向审查人员的正文（规则可能过于细碎，取舍原因
+# 与边界情形也可能与该页面的操作说明无关）。未体现时只报 warning 并列出具体条目，
+# 由模型判断是把它融入正文，还是该条目本就不必进入正文；不得为消除提示而把条目
+# 原句抄进正文。
+ADVISORY_MODULE_COVERAGE = (
+    ("validation_rules", "输入或状态规则"),
+    ("rationale", "设计取舍原因"),
+    ("boundary", "边界情形"),
+)
+
+COVERAGE_ADVISORY_NOTE = (
+    "须自行判断是将其融入正文，还是该条目本就不必进入正文；"
+    "不得为通过校验而把核对清单条目改写成正文原句"
 )
 
 SECTION_HEADING_PATTERN = re.compile(
@@ -292,20 +314,20 @@ def manual_quality_issues(
         paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", prose) if paragraph.strip()]
         if len(paragraphs) not in (2, 3):
             issues.append(f"模块正文段落数应为 2 段，必要时 3 段，当前为 {len(paragraphs)} 段：{title}")
-        if prose_length < 120:
-            issues.append(f"模块正文过短（正文 {prose_length} 字，下限 120 字）：{title}")
-        if prose_length > 300:
-            issues.append(f"模块正文过长（正文 {prose_length} 字，上限 300 字）：{title}")
+        if prose_length < MODULE_PROSE_MIN_CHARS:
+            issues.append(
+                f"模块正文过短（正文 {prose_length} 字，下限 {MODULE_PROSE_MIN_CHARS} 字）：{title}"
+            )
+        if prose_length > MODULE_PROSE_MAX_CHARS:
+            issues.append(
+                f"模块正文过长（正文 {prose_length} 字，上限 {MODULE_PROSE_MAX_CHARS} 字）：{title}"
+            )
         for field, label in REQUIRED_MODULE_COVERAGE:
             values = as_text_list(module.get(field))
             if values and not any(reflected_in(prose, value) for value in values):
-                issues.append(f"模块正文未体现{label}：{title}，须由模型将该项内容写入 `body`")
-        for field, label in (("rationale", "设计取舍原因"), ("boundary", "边界情形")):
-            values = as_text_list(module.get(field))
-            if values and not any(reflected_in(prose, value) for value in values):
                 issues.append(
-                    f"模块 `{field}` 非空但正文未体现{label}：{title}，"
-                    "须由模型将该内容融入 `body`，生成环节不再拼接追加"
+                    f"模块正文未体现{label}：{title}，须由模型将该项内容写入 `body`；"
+                    "不得为通过校验而把核对清单条目改写成正文原句"
                 )
         for label in ("进入方式：", "页面内容：", "操作步骤：", "操作规则：", "操作结果与反馈："):
             if label in body:
@@ -364,8 +386,42 @@ def template_rotation_warnings(text: str, modules: list[dict[str, Any]]) -> list
     ]
 
 
+def module_coverage_warnings(text: str, modules: list[dict[str, Any]]) -> list[str]:
+    """Warn when a module's prose reflects none of an advisory checklist field's entries.
+
+    触发门槛与硬性核对项一致：该字段全部条目都未被正文体现时才提示，部分体现不提示，
+    以免提示过密反而促使模型把条目原句抄进正文。提示中列出具体未被体现的条目，
+    供模型逐条判断该补写正文，还是该条目本就不必进入正文。
+    """
+    warnings: list[str] = []
+    for module in modules:
+        title = str(module.get("feature") or "").strip()
+        if not title:
+            continue
+        body = manual_section_body(text, title)
+        if not body:
+            continue
+        prose = module_prose(body)
+        for field, label in ADVISORY_MODULE_COVERAGE:
+            values = as_text_list(module.get(field))
+            if not values:
+                continue
+            missing = [value for value in values if not reflected_in(prose, value)]
+            if len(missing) != len(values):
+                continue
+            listed = "；".join(missing[:5])
+            if len(missing) > 5:
+                listed += f"；……（共 {len(missing)} 条）"
+            warnings.append(
+                f"模块「{title}」正文未体现{label}（`{field}`），未被体现的条目为：{listed}。"
+                + COVERAGE_ADVISORY_NOTE
+            )
+    return warnings
+
+
 def manual_quality_warnings(text: str, modules: list[dict[str, Any]]) -> list[str]:
     warnings: list[str] = []
+    warnings.extend(module_coverage_warnings(text, modules))
     has_rationale_or_boundary = any(
         module.get("rationale") or module.get("boundary") for module in modules
     )
@@ -476,7 +532,10 @@ def required_module_body(item: dict[str, Any], title: str) -> list[str]:
             "STOP_FOR_USER\n"
             f"NEXT_ACTION: 操作手册页面模块「{title}」缺少 `body`。操作手册正文由模型撰写，生成环节不造句、不作缺省生成。"
             "须回到业务理解阶段，依据该模块的 entry、visible_elements、operation_steps、validation_rules、"
-            "feedback、rationale、boundary 撰写 2 段（必要时 3 段）正文并写入 `body`，再重新生成操作手册。"
+            f"feedback、rationale、boundary 撰写 2 段（必要时 3 段）、{MODULE_PROSE_MIN_CHARS} 至 "
+            f"{MODULE_PROSE_MAX_CHARS} 字的正文并写入 `body`，再重新生成操作手册。"
+            "这些字段是核对清单，正文须用自己的行文讲清该页面；"
+            "不得为通过校验而把清单条目原句抄进正文，那样校验只会自我印证，失去核对意义。"
         )
     return paragraphs
 
@@ -862,7 +921,13 @@ def write_review_records(out_dir: Path, records: list[dict[str, Any]], modules: 
         json.dumps({"rounds": records, "module_count": len(modules)}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    lines = ["# 操作手册自检记录", ""]
+    lines = [
+        "# 操作手册自检记录",
+        "",
+        "标为 WARN 的条目为分级提示，不阻断生成：须逐条判断该内容应补写进正文，"
+        "还是本就不必进入正文。不得为消除提示而把核对清单条目原句抄进正文。",
+        "",
+    ]
     for record in records:
         lines.extend([f"## 第 {record['round']} 轮：{record['action']}", ""])
         if record["issues"]:
@@ -928,6 +993,8 @@ def main() -> None:
             "NEXT_ACTION: 操作手册自检仍存在问题。操作手册正文由模型撰写，生成环节不作改写。"
             "须回到业务理解阶段，按自检记录逐条重写 manual_overview、manual_feature_highlights "
             "或对应模块的 body，再重新生成。"
+            "重写时不得为通过校验而把 entry、operation_steps、validation_rules、feedback、rationale、"
+            "boundary 等核对清单条目原句抄进正文：清单与正文措辞一致即等于自我印证，核对随之失效。"
         )
         raise SystemExit(1)
     print("STOP_FOR_USER")

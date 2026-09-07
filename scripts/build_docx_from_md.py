@@ -92,15 +92,15 @@ def confirmation_issues(workdir: Path) -> list[str]:
 
     business = read_json_if_exists(draft_dir / "业务理解.json")
     if not business or not business.get("user_confirmed"):
-        issues.append("业务理解尚未确认：须确认 草稿/业务理解.md 后记录 `business` 门禁")
+        issues.append("业务理解尚未确认：须确认 草稿/业务理解.md 后记录 `business` 确认点")
 
     selection = read_json_if_exists(draft_dir / "代码文件选择.json")
     if not selection or not selection.get("user_confirmed"):
-        issues.append("代码文件选择尚未确认：须确认 草稿/代码文件选择.json 后记录 `code-selection` 门禁")
+        issues.append("代码文件选择尚未确认：须确认 草稿/代码文件选择.json 后记录 `code-selection` 确认点")
 
     screenshot = read_json_if_exists(workdir / "截图方式确认.json")
     if not screenshot.get("screenshot_method_confirmed"):
-        issues.append("截图方式尚未确认：须先选定截图方式，再记录 `screenshot-method` 门禁")
+        issues.append("截图方式尚未确认：须先选定截图方式，再记录 `screenshot-method` 确认点")
 
     app_md = draft_dir / "申请表信息.md"
     if app_md.exists():
@@ -112,11 +112,11 @@ def confirmation_issues(workdir: Path) -> list[str]:
 
     app_confirmation = read_json_if_exists(draft_dir / "申请表字段确认.json")
     if not app_confirmation.get("application_fields_confirmed"):
-        issues.append("申请表字段尚未确认：须补全字段后记录 `application-fields` 门禁")
+        issues.append("申请表字段尚未确认：须补全字段后记录 `application-fields` 确认点")
 
     markdown_confirmation = read_json_if_exists(draft_dir / "最终生成确认.json")
     if not markdown_confirmation.get("markdown_confirmed"):
-        issues.append("Markdown 草稿尚未最终确认：须确认全部草稿后记录 `markdown` 门禁")
+        issues.append("Markdown 草稿尚未最终确认：须确认全部草稿后记录 `markdown` 确认点")
 
     return issues
 
@@ -1067,6 +1067,117 @@ def build_manual_docx(md_path: Path, out_path: Path, base_dir: Path, software_na
     normalize_docx_text_color(out_path)
 
 
+# 代码鉴别材料的兜底命名：仅在 草稿/代码提取清单.json 缺失或字段不全时使用。
+# 抽取环节在无法凑成 30+30 页时会输出降级文件名（如 代码-前21页+后21页.md），
+# 该名不在下表之中，故正常路径一律以清单记录的 outputs 为准。
+CODE_SPEC_FALLBACK: list[tuple[str, str]] = [
+    ("代码-前后各30页.md", "-代码(前30页+后30页).docx"),
+    ("代码-全部.md", "-代码(全部).docx"),
+]
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
+def code_docx_name(
+    safe_name: str, md_name: str, manifest: dict[str, Any], warnings: list[str]
+) -> str:
+    """Derive the formal docx file name for one extracted code Markdown file.
+
+    命名一律保持 `<软件名>-代码(<段落说明>).docx` 的形状，因为下游的
+    verify_materials.py 与 convert_to_pdf.py 都按 `*-代码(*).docx` 定位该材料。
+    段落说明按清单的 mode 分三种取值：`front30_back30` 取 front_pages /
+    back_pages，`all_under_60_pages` 记为「全部」，`selected_under_60_pages`
+    记为「已选部分」（该模式下抽取环节无法确认已选文件覆盖全部候选源码，
+    材料不得称「全部」）。上述字段皆不可用时退回按 Markdown 主名推导，并追加警告。
+    """
+    mode = manifest.get("mode")
+    front_pages = _positive_int(manifest.get("front_pages"))
+    back_pages = _positive_int(manifest.get("back_pages"))
+
+    if mode == "front30_back30" and front_pages and back_pages:
+        return f"{safe_name}-代码(前{front_pages}页+后{back_pages}页).docx"
+    if mode == "all_under_60_pages" or md_name == "代码-全部.md":
+        return f"{safe_name}-代码(全部).docx"
+    if mode == "selected_under_60_pages" or md_name == "代码-已选部分.md":
+        rendered = manifest.get("rendered_pages")
+        warnings.append(
+            f"代码材料按「已选部分」生成：清单 mode={mode!r}，实际渲染 {rendered} 页，不足 60 页，"
+            "且抽取环节无法确认已选文件覆盖全部候选源码，故材料名与标题均不称「全部」。"
+            "如须按全部代码材料提交，应先核对 草稿/代码文件选择.json 后重新运行 extract_code_material.py"
+        )
+        return f"{safe_name}-代码(已选部分).docx"
+
+    stem = Path(md_name).stem
+    segment = stem[len("代码-") :] if stem.startswith("代码-") else stem
+    warnings.append(
+        f"草稿/代码提取清单.json 的 mode/front_pages/back_pages 字段不完整（mode={mode!r}、"
+        f"front_pages={manifest.get('front_pages')!r}、back_pages={manifest.get('back_pages')!r}），"
+        f"代码材料文件名已按 Markdown 主名 {md_name} 推导为「{segment}」"
+    )
+    return f"{safe_name}-代码({segment or '全部'}).docx"
+
+
+def resolve_code_specs(draft_dir: Path, safe_name: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """Return [(markdown 文件名, docx 文件名)] plus any warnings.
+
+    以 草稿/代码提取清单.json 的 outputs 字段为准，使抽取环节的降级命名
+    （例如 代码-前21页+后21页.md）同样能生成正式 Word；清单缺失或 outputs
+    不可用时回退至 CODE_SPEC_FALLBACK，并明确追加警告，避免代码材料静默缺失。
+    """
+    warnings: list[str] = []
+    manifest_path = draft_dir / "代码提取清单.json"
+    manifest: dict[str, Any] = {}
+    if not manifest_path.exists():
+        warnings.append(
+            "缺少 草稿/代码提取清单.json，代码材料已回退至固定文件名映射"
+            f"（{'、'.join(md for md, _ in CODE_SPEC_FALLBACK)}），"
+            "如抽取环节输出的是降级文件名，须重新运行 extract_code_material.py 生成清单"
+        )
+    else:
+        try:
+            loaded = read_json(manifest_path)
+            manifest = loaded if isinstance(loaded, dict) else {}
+            if not isinstance(loaded, dict):
+                warnings.append("草稿/代码提取清单.json 的顶层不是对象，代码材料已回退至固定文件名映射")
+        except Exception as exc:
+            warnings.append(f"草稿/代码提取清单.json 无法解析（{exc}），代码材料已回退至固定文件名映射")
+
+    raw_outputs = manifest.get("outputs")
+    outputs = (
+        [name.strip() for name in raw_outputs if isinstance(name, str) and name.strip()]
+        if isinstance(raw_outputs, list)
+        else []
+    )
+    if not outputs:
+        if manifest:
+            warnings.append(
+                "草稿/代码提取清单.json 未记录可用的 outputs 字段，代码材料已回退至固定文件名映射"
+            )
+        return [(md_name, f"{safe_name}{suffix}") for md_name, suffix in CODE_SPEC_FALLBACK], warnings
+
+    specs = [(md_name, code_docx_name(safe_name, md_name, manifest, warnings)) for md_name in outputs]
+
+    # 页数未精确对齐时必须在生成报告中留痕：此时代码材料不足 30+30 共 60 页，
+    # 申请表「页数」字段须按实际渲染页数填写，否则最终校验会判页数不一致。
+    if manifest.get("pagination_exact") is False:
+        rendered = manifest.get("rendered_pages")
+        warnings.append(
+            f"代码材料页数未精确对齐：清单记录实际渲染前 {manifest.get('front_pages')} 页 + 后 "
+            f"{manifest.get('back_pages')} 页，共 {rendered} 页，未达到 30+30 共 60 页。"
+            f"申请表「页数」字段须按 {rendered} 填写；如须精确 60 页，"
+            "应在 草稿/代码文件选择.json 中增删文件后重新运行 extract_code_material.py"
+        )
+    pagination_warning = manifest.get("pagination_warning")
+    if isinstance(pagination_warning, str) and pagination_warning.strip():
+        warnings.append(f"代码抽取环节的分页提示：{pagination_warning.strip()}")
+
+    return specs, warnings
+
+
 def build_all(workdir: Path, software_name: str, version: str) -> dict[str, Any]:
     workdir = ensure_dir(workdir)
     draft_dir = workdir / "草稿"
@@ -1099,16 +1210,29 @@ def build_all(workdir: Path, software_name: str, version: str) -> dict[str, Any]
         outputs.append(app_txt)
     warnings.extend(app_warnings)
 
-    code_specs = [
-        ("代码-前后各30页.md", f"{safe_name}-代码(前30页+后30页).docx"),
-        ("代码-全部.md", f"{safe_name}-代码(全部).docx"),
-    ]
+    code_specs, code_spec_warnings = resolve_code_specs(draft_dir, safe_name)
+    warnings.extend(code_spec_warnings)
+    code_outputs: list[Path] = []
+    missing_code_md: list[str] = []
     for md_name, docx_name in code_specs:
         md_path = draft_dir / md_name
         if md_path.exists():
             out_path = final_dir / docx_name
             build_code_docx(md_path, out_path, final_software_name, final_version)
             outputs.append(out_path)
+            code_outputs.append(out_path)
+        else:
+            missing_code_md.append(md_name)
+    if not code_outputs:
+        warnings.append(
+            "未生成任何代码鉴别材料 Word：以下 Markdown 源在 草稿/ 下均不存在（"
+            + "、".join(missing_code_md or [md for md, _ in code_specs])
+            + "）。须先运行 extract_code_material.py 生成代码材料 Markdown 后重新生成正式资料"
+        )
+    elif missing_code_md:
+        warnings.append(
+            "部分代码材料 Markdown 缺失，对应 Word 未生成：" + "、".join(missing_code_md)
+        )
 
     manual_md = draft_dir / "操作手册.md"
     if manual_md.exists():

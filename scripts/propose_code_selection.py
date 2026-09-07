@@ -8,10 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from common import COPYRIGHT_CODE_EXTS, FRONTEND_EXTS, ensure_dir, is_known_config_file, iter_project_files, read_json, rel, write_json
-from extract_code_material import LINES_PER_PAGE, SPLIT_THRESHOLD_PAGES, category_weight, material_code_lines, should_skip_file
+from extract_code_material import LINES_PER_PAGE, SPLIT_THRESHOLD_PAGES, category_weight, classify_source_lines, should_skip_file
 
 
 DEFAULT_MAX_FILES = 0
+
+
+def count_material_lines(text: str, suffix: str) -> int:
+    """Count the lines that would enter the code material: everything but blank-only lines.
+
+    与 extract_code_material.prepare_records 的保留口径一致：空行剔除，注释行与有效代码行
+    均计入材料行数。此处复用 classify_source_lines，避免候选清单与实际抽取出现两套口径。
+    """
+    return sum(1 for kind in classify_source_lines(text, suffix) if kind != "blank")
 
 
 def evidence_for(path: Path, project: Path) -> str:
@@ -45,7 +54,7 @@ def build_candidates(project: Path) -> list[dict[str, Any]]:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
             line_count = len(text.splitlines())
-            material_line_count = len(material_code_lines(text))
+            material_line_count = count_material_lines(text, path.suffix.lower())
         except Exception:
             line_count = 0
             material_line_count = 0
@@ -102,7 +111,7 @@ def write_selection_md(path: Path, data: dict[str, Any]) -> None:
         "1. 由模型依据项目业务与代码入口，选定最能体现软件功能的文件。",
         "2. 将需要抽取的文件设为 `selected: true`，并填写 `model_reason`。",
         "3. 代码材料抽取须保证代码与功能方法的完整性：按完整文件抽取并去除纯空行，不得按任意行区间截取。",
-        "4. 用户确认模型选择后，方可记录 `code-selection` 门禁。",
+        "4. 用户确认模型选择后，方可记录 `code-selection` 确认点。",
         "",
         "## 默认选中文件",
         "",
