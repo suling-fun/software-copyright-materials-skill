@@ -28,7 +28,7 @@ git clone https://github.com/suling-fun/software-copyright-materials-skill.git \
 
 提及「软著」「软著材料」「代码鉴别材料」「操作手册」「官网填报」一类词亦可触发。
 
-**三、应答**——流程在七处停止并等待输入：项目定位、业务口径、申请表字段、代码抽取范围、截图方式、草稿确认，以及 DOCX 环境缺失时的降级选择（该项仅在环境不全时出现）。逐项答复即可，其余由流程自行推进。向平台点击「确认填报」不在其列，须由申请人本人执行。
+**三、应答**——流程在七处停止并等待输入：项目定位、业务口径、申请表字段、代码抽取范围、截图方式、草稿确认，以及 DOCX 环境缺失时的降级选择（该项仅在环境不全时出现）。逐项答复即可，其余由流程自行推进。向平台点击「确认填报」不在其列，须由申请人本人执行。此外，材料生成完毕并通过验证后另有一次分叉询问：是否继续提交至版权中心。该询问不写入确认记录，只决定流程是否进入平台填报阶段；其前的 DOCX 生成与 PDF 转换一律自动执行。
 
 **四、产出**——全部材料生成于待登记项目的根目录下：
 
@@ -70,7 +70,7 @@ git clone https://github.com/suling-fun/software-copyright-materials-skill.git \
 
 每一处确认均须停止执行并等待用户输入，不得以「用户未选择则默认继续」的方式放行；用户回复后先记录该次确认，再进入下一阶段。
 
-两处不可省略：其一，转换 PDF 前须更新 Word 域，否则操作手册的目录页码会全部印成 1；其二，交付前的独立核实不能由生成材料的同一方代劳，须以原始问题委派，避免确认偏误。
+两处不可省略：其一，操作手册转换 PDF 前须更新 Word 域，否则目录页码会全部印成 1；其二，交付前的独立核实不能由生成材料的同一方代劳，须以原始问题委派，避免确认偏误。
 
 完整的十四步、各步命令与材料规则见 [SKILL.md](SKILL.md)。
 
@@ -79,7 +79,7 @@ git clone https://github.com/suling-fun/software-copyright-materials-skill.git \
 ```
 software-copyright-materials/
 ├── SKILL.md          # 十四步工作流、七处确认与核心原则
-├── scripts/          # 14 个脚本，仅用标准库
+├── scripts/          # 15 个脚本，标准库为主，另有两项可选依赖
 ├── references/       # 9 份规则文档，按阶段读取
 ├── assets/           # 示意图
 └── LICENSE
@@ -93,12 +93,13 @@ software-copyright-materials/
 | --- | --- | --- |
 | 全部脚本 | Python 3.10 或更高版本 | 无法运行 |
 | Word 生成 | `python-docx` | 可降级至 Pandoc 或基础 OOXML，排版控制变弱 |
-| PDF 导出 | Microsoft Word 或 LibreOffice | 无法产出平台所需的 PDF |
+| 代码材料 PDF | `fpdf2`（可选依赖） | 降级至 Microsoft Word 或 LibreOffice |
+| 操作手册 PDF | Microsoft Word 或 LibreOffice | 须由用户自行导出，不阻断流程 |
 | 视频抽帧 | FFmpeg 与 FFprobe | 改用其他截图方式 |
 | 网页截图 | 任一具备浏览器操作与截图能力的环境（Playwright、Playwright MCP、Chrome DevTools MCP、Browser Use、Stagehand、Browserbase 等） | 改由用户自行提供截图 |
 | 桌面应用截图 | computer use 类桌面控制工具 | 同上 |
 
-PDF 导出由 `scripts/convert_to_pdf.py` 驱动：macOS 上优先用 Word，先更新域再重新分页，然后导出并校验页数与加密状态；Word 不可用时降级至 LibreOffice，此时须人工核对操作手册首页的目录页码。`python-docx` 只负责读写 DOCX，不含 PDF 排版渲染引擎。
+PDF 导出由 `scripts/convert_to_pdf.py` 统筹，两份材料路径不同。代码鉴别材料的分页本就由脚本算定——每页 50 行，页间显式分页符——因此由 `scripts/render_code_pdf.py` 从同一份中间 Markdown 直接渲染 PDF，排版规格与 Word 版逐项对齐，中文字体子集嵌入文件，不需要任何办公套件；`fpdf2` 不可用时才降级至 Word 或 LibreOffice。操作手册的目录是 Word 域，页码须经渲染回填，故仍走转换链路：优先用 Word，先更新域再重新分页；Word 不可用时降级至 LibreOffice，须人工核对首页目录页码；两者皆无时提示用户自行导出，因其页数不受硬性校验。`python-docx` 在任何一条路径上都不参与 PDF 输出：该库只读写 DOCX，不含排版渲染引擎。
 
 ## 设计取向
 
@@ -129,9 +130,11 @@ PDF 导出由 `scripts/convert_to_pdf.py` 驱动：macOS 上优先用 Word，先
 
 ## 版本
 
-当前版本为 4.1.0。
+当前版本为 4.2.0。
 
 自 4.0.0 起，业务理解 JSON 的字段契约不向后兼容：新增 `manual_overview`、`manual_feature_highlights` 与 `manual_modules[].body` 三个必填的正文字段，删除 `manual_sections` 与 `related_documents`，原先由脚本按固定清单生成的条件章节改由通用的 `manual_extra_sections` 承载。按 3.x 生成的业务理解文件须重新编写后方可使用。
+
+4.2.0 相对 4.1.0 向后兼容：代码鉴别材料的 PDF 改由 `scripts/render_code_pdf.py` 从中间 Markdown 直接渲染，不再需要 Microsoft Word 或 LibreOffice，新增可选依赖 `fpdf2`；操作手册的 PDF 维持转换链路，两种办公套件均缺失时不再阻断流程；PDF 转换明确为无须征询用户的自动步骤，材料通过验证后新增一处「是否提交至版权中心」的分叉询问；代码材料的排版数值收敛至 `common.py` 的 `CODE_LAYOUT`，由两个渲染后端共用。
 
 4.1.0 相对 4.0.0 向后兼容：代码材料新增页数对齐与注释占比统计，新增 DOCX 转 PDF 脚本，操作手册模块正文的字数上限放宽至 400 字，并移除了申请表叙述性字段在内容缺失时回落到模板套话的处理。
 

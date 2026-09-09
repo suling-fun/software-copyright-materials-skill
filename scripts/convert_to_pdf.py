@@ -4,6 +4,11 @@
 中国版权保护中心的在线提交只接受 PDF，而 `build_docx_from_md.py` 产出的是 Word。
 本脚本把 `正式资料/` 下的代码鉴别材料与操作手册各转成同名 PDF，输出到同一目录。
 
+代码鉴别材料另有一条不经 Word 的路径。其分页完全由 `build_docx_from_md.py` 决定（每页
+固定 50 行，页间插入显式分页符），页数在生成时即已确定，故可由同一份中间 Markdown 直接
+渲染 PDF：先试 `render_code_pdf.py`（fpdf2），不可用或未通过校验时再降级至下述 Word /
+LibreOffice 链路。操作手册不适用直出：其目录是 Word 的 TOC 域，页码须经 Word 渲染回填。
+
 转换路径按优先级降级：
 
 1. macOS 且 Microsoft Word 可用时，经 osascript 驱动 Word。动作顺序固定为
@@ -24,7 +29,11 @@
 以免半成品留在 `正式资料/` 被 `verify_materials.py` 当作页数判据；转换前就已存在、且本次
 未被改写的 PDF 一律不动，并在终端提示须自行确认其是否过时。
 
-只使用标准库，不引入任何第三方依赖。
+Word / LibreOffice 链路只使用标准库；直出路径依赖可选的 fpdf2，导入失败即降级，
+不影响本脚本运行。
+
+退出码：代码鉴别材料 PDF 生成或校验失败为 1；代码 PDF 已产出、仅操作手册因本机缺少
+Word 与 LibreOffice 而未产出时为 0，并在终端提示操作手册须自行导出。
 
 注意：Microsoft Word 运行于沙盒之中，无法把 PDF 写入 `/private/tmp` 一类目录，此时会以
 `document ... doesn't understand the "save as" message` 报错。`正式资料/` 位于用户项目内，
@@ -45,6 +54,15 @@ import sys
 from pathlib import Path
 
 from common import read_text
+
+try:
+    # 直出后端为可选依赖：fpdf2 未安装、或该模块自身不可用时，一律降级至 Word / LibreOffice。
+    import render_code_pdf
+
+    DIRECT_PDF_AVAILABLE = render_code_pdf.FPDF_AVAILABLE
+except Exception:  # pragma: no cover - 取决于运行环境是否安装了 fpdf2
+    render_code_pdf = None  # type: ignore[assignment]
+    DIRECT_PDF_AVAILABLE = False
 
 try:
     # 复用 verify_materials.py 里已有的 PDF 页数判定，避免两处实现对同一份 PDF
@@ -422,9 +440,70 @@ def find_one(formal_dir: Path, pattern: str, label: str) -> Path:
     return matches[0]
 
 
+def convert_code_direct(
+    workdir: Path,
+    code_docx: Path,
+    pdf_path: Path,
+    declared: tuple[int, Path] | None,
+) -> int | None:
+    """Render the code material straight from Markdown; return its page count, or None to degrade.
+
+    直出路径与 Word 链路共用同一套校验：文件存在且非空、未加密、能读出页数，且页数与
+    申请表的「页数」字段一致。任一环节不成立即返回 None，由调用方降级至 Word /
+    LibreOffice；本次写出的半成品先行隔离为 `.pdf.invalid`，不留在 `正式资料/` 被
+    verify_materials.py 当作页数判据。
+    """
+    if not DIRECT_PDF_AVAILABLE:
+        print(
+            "提示：fpdf2 不可用，代码鉴别材料改由 Word / LibreOffice 转换。"
+            "执行 pip install fpdf2 后即可启用不依赖 Word 的直出路径。"
+        )
+        return None
+    if declared is None:
+        print(
+            "提示：未能读取申请表的「页数」字段，直出路径无从自校验，"
+            "代码鉴别材料改由 Word / LibreOffice 转换。"
+        )
+        return None
+
+    declared_pages, declared_from = declared
+    before = pdf_fingerprint(pdf_path)
+    print(f"正在直出 代码鉴别材料：草稿 Markdown → {pdf_path.name}（不经 Word）")
+    try:
+        result = render_code_pdf.build_code_pdf(workdir, code_docx, pdf_path)
+        for note in result.get("notes", []):
+            print(f"提示：{note}")
+        pages = inspect_pdf(pdf_path, "代码鉴别材料")
+        if pages != declared_pages:
+            raise RuntimeError(
+                f"直出的 PDF 为 {pages} 页，而 {declared_from} 的「页数」字段为 {declared_pages}"
+            )
+    except Exception as exc:
+        # 此处刻意宽捕获：直出后端的任何异常都只应导致降级，不得使整条转换流程中断。
+        print(f"提示：代码鉴别材料直出 PDF 未成功（{exc}），改由 Word / LibreOffice 转换。", file=sys.stderr)
+        disposal = dispose_failed_pdf(pdf_path, before)
+        if disposal:
+            print(disposal, file=sys.stderr)
+        return None
+
+    print(
+        f"直出完成：{Path(result['markdown']).name} → {pdf_path.name}，共 {pages} 页，"
+        f"首页页码 {result['start_page']}，"
+        f"字体 {result['mono_font']} + {result['cjk_font']}（子集已嵌入）"
+    )
+    if result.get("condensed"):
+        print(f"提示：{result['condensed']} 行超出正文宽度，已按行横向压缩，以免文字越出右边距")
+    return pages
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="将正式资料中的 Word 文档转换为平台上传所需的 PDF")
     parser.add_argument("--workdir", default="软件著作权申请资料", help="skill 输出目录（默认为 软件著作权申请资料）")
+    parser.add_argument(
+        "--no-direct",
+        action="store_true",
+        help="不使用代码鉴别材料的直出路径，一律经 Word / LibreOffice 转换",
+    )
     args = parser.parse_args()
 
     workdir = Path(args.workdir).resolve()
@@ -440,8 +519,26 @@ def main() -> int:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
 
+    # 申请表「页数」字段两条路径都要用，故先行读取；读取失败不在此处退出，
+    # 而是记下错误，使既有的失败信息与退出时机保持不变。
+    declared: tuple[int, Path] | None = None
+    declared_error: RuntimeError | None = None
+    try:
+        declared = read_declared_pages(workdir)
+    except RuntimeError as exc:
+        declared_error = exc
+
+    code_pdf = code_docx.with_suffix(".pdf")
+    manual_pdf = manual_docx.with_suffix(".pdf")
+    code_before = pdf_fingerprint(code_pdf)
+
+    code_pages: int | None = None
+    if not args.no_direct:
+        code_pages = convert_code_direct(workdir, code_docx, code_pdf, declared)
+
     use_word = find_word()
     soffice = None if use_word else find_soffice()
+    office_available = use_word or soffice is not None
     if use_word:
         print("转换后端：Microsoft Word（经 osascript 驱动，导出前更新域并重新分页）")
     elif soffice:
@@ -450,20 +547,42 @@ def main() -> int:
             "提示：LibreOffice 未必会更新 Word 的目录域。转换完成后，须人工打开操作手册 PDF 的"
             "首页目录，逐条核对页码是否为真实页码，而非全部印成 1。"
         )
-    else:
-        print(
-            "错误：本机既没有可用的 Microsoft Word（仅 macOS 支持经 osascript 驱动），"
-            "也没有可用的 LibreOffice（soffice）。请安装其中之一后重试。",
-            file=sys.stderr,
-        )
-        return 1
 
-    results: list[tuple[str, Path, int, tuple[int, int] | None]] = []
-    for label, docx_path in (("代码鉴别材料", code_docx), ("操作手册", manual_docx)):
-        pdf_path = docx_path.with_suffix(".pdf")
-        # 转换前先记录目标 PDF 的指纹，失败时据此判断该文件是否确由本次生成，
-        # 从而只处置本次的产物，不误删用户自行放入的同名 PDF。
-        before = pdf_fingerprint(pdf_path)
+    if not office_available:
+        if code_pages is None:
+            print(
+                "错误：本机既没有可用的 Microsoft Word（仅 macOS 支持经 osascript 驱动），"
+                "也没有可用的 LibreOffice（soffice）；代码鉴别材料的直出路径亦不可用。"
+                "请安装 Word 或 LibreOffice，或执行 pip install fpdf2 后重试。",
+                file=sys.stderr,
+            )
+            return 1
+        if declared is None:
+            # 直出成功即已完成页数比对，declared 不可能为空；此分支仅为静态防护。
+            print(f"错误：{declared_error}", file=sys.stderr)
+            return 1
+        declared_pages, declared_from = declared
+        print(f"OK 代码鉴别材料 PDF：{code_pdf}（{code_pages} 页，未加密）")
+        print(
+            f"OK pdf conversion: 代码鉴别材料 PDF 页数 {code_pages} 与 {declared_from} 的「页数」字段一致"
+        )
+        print("")
+        print("=" * 72)
+        print("注意：操作手册 PDF 未生成。本机没有可用的 Microsoft Word 与 LibreOffice，")
+        print("而操作手册的目录是 Word 的 TOC 域，页码须经 Word 渲染回填，无法由脚本直出。")
+        print(f"须在装有 Word 或 WPS 的机器上打开 {manual_docx.name}，")
+        print("先更新全部域（目录页码不得全部印成 1），再导出为同名 PDF，置于 正式资料/ 下。")
+        print("操作手册 PDF 的页数由平台按上传文件自动填写，不受本流程的硬性校验。")
+        print("=" * 72)
+        return 0
+
+    pending: list[tuple[str, Path, Path, tuple[int, int] | None]] = []
+    if code_pages is None:
+        pending.append(("代码鉴别材料", code_docx, code_pdf, code_before))
+    pending.append(("操作手册", manual_docx, manual_pdf, pdf_fingerprint(manual_pdf)))
+
+    converted: dict[str, int] = {}
+    for label, docx_path, pdf_path, before in pending:
         print(f"正在转换 {label}：{docx_path.name} → {pdf_path.name}")
         try:
             if use_word:
@@ -471,21 +590,20 @@ def main() -> int:
             else:
                 assert soffice is not None
                 convert_with_soffice(soffice, docx_path, pdf_path)
-            pages = inspect_pdf(pdf_path, label)
+            converted[label] = inspect_pdf(pdf_path, label)
         except RuntimeError as exc:
             print(f"错误：{exc}", file=sys.stderr)
             disposal = dispose_failed_pdf(pdf_path, before)
             if disposal:
                 print(disposal, file=sys.stderr)
             return 1
-        results.append((label, pdf_path, pages, before))
 
-    code_pages = results[0][2]
-    try:
-        declared_pages, declared_from = read_declared_pages(workdir)
-    except RuntimeError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
+    if code_pages is None:
+        code_pages = converted["代码鉴别材料"]
+    if declared is None:
+        print(f"错误：{declared_error}", file=sys.stderr)
         return 1
+    declared_pages, declared_from = declared
 
     if declared_from.suffix.lower() == ".md":
         print(
@@ -502,14 +620,13 @@ def main() -> int:
             "两者必须一致：请先核对代码材料的取用范围与申请表页数字段，修正后重新生成。",
             file=sys.stderr,
         )
-        code_pdf_path, code_before = results[0][1], results[0][3]
-        disposal = dispose_failed_pdf(code_pdf_path, code_before)
+        disposal = dispose_failed_pdf(code_pdf, code_before)
         if disposal:
             print(disposal, file=sys.stderr)
         return 1
 
-    for label, pdf_path, pages, _ in results:
-        print(f"OK {label} PDF：{pdf_path}（{pages} 页，未加密）")
+    print(f"OK 代码鉴别材料 PDF：{code_pdf}（{code_pages} 页，未加密）")
+    print(f"OK 操作手册 PDF：{manual_pdf}（{converted['操作手册']} 页，未加密）")
     print(
         f"OK pdf conversion: 代码鉴别材料 PDF 页数 {code_pages} 与 {declared_from} 的「页数」字段一致"
     )

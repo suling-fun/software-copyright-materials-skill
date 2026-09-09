@@ -13,7 +13,7 @@ metadata:
   short-description: 生成、校验并辅助提交中国软件著作权申请材料
   author: suling-fun
   maintainer: suling-fun
-  version: "4.1.0"
+  version: "4.2.0"
   repository: https://github.com/suling-fun/software-copyright-materials-skill
   upstream: https://github.com/Fokkyp/SoftwareCopyright-Skill
   upstream-version: "1.3"
@@ -33,7 +33,9 @@ metadata:
 - 需要 Python 3.10 或更高版本。
 - 推荐安装 `python-docx`；不可用时可选用 `pandoc` 作为 DOCX 降级路径。
 - 处理操作视频时需要 `ffmpeg` 与 `ffprobe`，仅用于提取具有时间覆盖保证的画面帧。
-- 转换 PDF 时需要 Microsoft Word 或 LibreOffice 其中之一；仅在需要向平台上传材料时用到。
+- 代码鉴别材料的 PDF 由脚本直接渲染，推荐安装可选依赖 `fpdf2`（`pip install fpdf2`）。该份材料的分页本就由脚本算定（每页 50 行、页间显式分页符），直接渲染无信息损失，无需办公套件；`fpdf2` 不可用时降级至 Microsoft Word 或 LibreOffice。
+- 操作手册的 PDF 仍需 Microsoft Word 或 LibreOffice 其中之一，因其目录是 Word 域，页码须经渲染回填。两者皆不可用时，该份 PDF 须由用户自行导出，其页数不受硬性校验，不阻断流程。
+- 三条路径均不使用 `python-docx` 输出 PDF：该库只读写 DOCX 的 OOXML 结构，不含排版渲染引擎，既不计算分页，也不解析目录域，更不具备 PDF 输出能力。
 
 ## 脚本目录
 
@@ -114,6 +116,7 @@ python3 ${SKILL_DIR}/scripts/check_environment.py \
 - Markdown 草稿、TXT、基础 DOCX 是否可用。
 - `python-docx` 是否可用（决定是否采用规范 Word 排版路径）。
 - `python-docx` 不可用时，`pandoc` 是否可用作降级路径。
+- `fpdf2` 是否可用（决定代码鉴别材料能否脱离办公套件直接生成 PDF）。
 
 用户选择：
 
@@ -408,7 +411,7 @@ python3 ${SKILL_DIR}/scripts/build_docx_from_md.py \
 
 ### 12. 转换为 PDF
 
-平台上传只接受 PDF，正式 Word 生成后须执行转换：
+平台上传只接受 PDF，正式 Word 生成后须执行本步骤。**本步骤由 agent 直接执行，不得停下征询用户意见**：转换属于材料生成的组成部分，而非提交动作，且代码 PDF 的实际页数是第 13 步校验申请表「页数」字段的判据，缺少 PDF 将使该项校验降级为分页符推算。仅当用户在此前已明确表示只要 Word、暂不提交时方可跳过。
 
 ```bash
 python3 ${SKILL_DIR}/scripts/convert_to_pdf.py --workdir 软件著作权申请资料
@@ -419,9 +422,15 @@ python3 ${SKILL_DIR}/scripts/convert_to_pdf.py --workdir 软件著作权申请�
 - `正式资料/<软件全称>-代码(前30页+后30页).pdf`
 - `正式资料/<软件全称>_操作手册.pdf`
 
-转换在 macOS 上优先驱动 Microsoft Word，先更新域再重新分页，然后导出 PDF。**更新域这一步不可省略**：操作手册的目录是 Word 域，未更新即导出会使目录页码全部印成 1。Word 不可用时降级至 LibreOffice，此时须另行核对首页目录是否正确。
+两份材料的生成路径不同。
 
-转换后脚本会校验两份 PDF 是否存在、非空、未加密，并输出实际页数；代码 PDF 的页数须与申请表「页数」字段一致，不一致时报错。用户明确表示暂不提交、只要 Word 时，可跳过本步骤。
+代码鉴别材料优先由 `scripts/render_code_pdf.py` 从中间 Markdown 直接渲染，不经办公套件。其排版规格与 Word 版严格对齐：A4、正文 7.2pt、行距精确 14pt、每页 50 行、页眉左「软件全称 版本号」右「第 N 页」，页码起始值取中间 Markdown 的首页页号（后 30 页文档自 31 起）。中文字体子集嵌入 PDF，不依赖阅读器自备字体。`fpdf2` 不可用或渲染失败时，自动降级至 Word 与 LibreOffice 的转换链路。
+
+操作手册仍走转换链路：macOS 上优先驱动 Microsoft Word，先更新域再重新分页，然后导出 PDF。**更新域这一步不可省略**：操作手册的目录是 Word 域，未更新即导出会使目录页码全部印成 1。Word 不可用时降级至 LibreOffice，此时须另行核对首页目录是否正确。
+
+无论走哪条路径，脚本都会校验 PDF 是否存在、非空、未加密，并输出实际页数；代码 PDF 的页数须与申请表「页数」字段一致，不一致即判失败，该份 PDF 被改名为 `.pdf.invalid` 以免被后续校验误当作判据。
+
+退出码的含义须据此理解：代码 PDF 生成或校验失败时退出码为 1，必须排查后重新执行，不得带着缺失的代码 PDF 进入第 13 步；代码 PDF 已成功、仅操作手册 PDF 因无 Word 与 LibreOffice 而未产出时退出码为 0，终端会打印提示，此时可继续第 13 步，并在提交前告知用户自行导出操作手册 PDF。
 
 ### 13. 三轮验证
 
@@ -452,9 +461,11 @@ python3 -m py_compile ${SKILL_DIR}/scripts/*.py
 
 打开生成的 `.docx` 文件，人工检查排版、页眉与分页是否正常。`环境检查.md` 显示 `python-docx` 不可用时，表明当前采用 `pandoc`/基础 OOXML 降级路径。用户明确选择不安装 `python-docx` 并记录 `environment` 确认点后，继续生成 Markdown、TXT 与降级 DOCX，并在报告中说明当前使用降级路径。
 
+三轮验证全部通过后，向用户报告正式资料清单与关键数值，包括软件全称、版本号、代码 PDF 页数、操作手册 PDF 页数与 `正式资料/` 的实际路径，随后**主动询问是否继续提交至中国版权保护中心**。该处是整个流程中唯一的提交决策点：用户明确答复之前不得进入第 14 步，不得打开平台页面。用户表示暂不提交时，任务在此结束，材料留存于 `正式资料/` 待用。
+
 ### 14. 中国版权保护中心官网填报与签章页
 
-用户要求继续提交时，读取 [references/ccopyright_submission_workflow.md](references/ccopyright_submission_workflow.md)，按已验证的 R11 页面顺序操作。本阶段的目标并非重复制作材料，而是将已确认的 `正式资料/申请表信息.txt`、代码 PDF 与操作手册 PDF 准确录入平台，并推进至用户授权的停止点。
+用户在上述询问中答复继续提交时，读取 [references/ccopyright_submission_workflow.md](references/ccopyright_submission_workflow.md)，按已验证的 R11 页面顺序操作。本阶段的目标并非重复制作材料，而是将已确认的 `正式资料/申请表信息.txt`、代码 PDF 与操作手册 PDF 准确录入平台，并推进至用户授权的停止点。
 
 关键边界：
 
@@ -477,5 +488,8 @@ python3 -m py_compile ${SKILL_DIR}/scripts/*.py
 - 代码文件候选清单生成后，须由用户确认或修改 `代码文件选择.json`。
 - 操作手册截图前，须确认操作视频是否已覆盖全部模块；未覆盖或无视频时，须由用户在浏览器自动化截图能力、桌面操作截图能力、用户自行截图三种方式中选择一种；选择后再检查对应工具是否可用。
 - Markdown 草稿是否确认、可否进入 Word 生成，须由用户决定。
+- 三轮验证通过、正式材料齐备后，须询问用户是否继续提交至中国版权保护中心；用户未明确要求前不得进入官网填报阶段。
 - 官网需要登录、验证码或其他身份验证时，由用户完成后再继续。
 - 点击「确认填报」前，必须由用户确认最终申请信息；遇到声明、承诺、签名或盖章内容时，由申请人本人阅读并决定。
+
+反向约定：正式 Word 生成后的 PDF 转换（第 12 步）属于材料生成的组成部分，由 agent 直接执行并当场校验，不列入上述询问范围。

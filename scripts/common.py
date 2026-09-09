@@ -6,9 +6,51 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+
+@dataclass(frozen=True)
+class CodeLayout:
+    """代码鉴别材料的排版数值，单位为厘米与磅。"""
+
+    page_width_cm: float
+    page_height_cm: float
+    margin_top_cm: float
+    margin_bottom_cm: float
+    margin_left_cm: float
+    margin_right_cm: float
+    header_distance_cm: float
+    body_font_size_pt: float
+    body_line_pt: float
+    header_font_size_pt: float
+    header_line_pt: float
+
+
+# 代码鉴别材料两个渲染后端（build_docx_from_md.py 出 DOCX、render_code_pdf.py 直出 PDF）
+# 的唯一数值来源。两份材料的分页必须逐页一致，代码材料的页数又是申请表「页数」字段的
+# 硬校验对象，故改动此处会同时改变 DOCX 与 PDF 的分页，不得只调整其中一侧。
+# 此处只存纯数值，厘米转 EMU、磅转点等单位换算由各后端自行完成，
+# 以免本模块被迫依赖 python-docx 或 fpdf2。
+# 每页行数（extract_code_material.LINES_PER_PAGE）不在此处：两个后端都不读取该值，
+# 分页一律由抽取环节产出的中间 Markdown 决定；且 extract_code_material 依赖本模块，
+# 反向引用会形成循环导入。
+CODE_LAYOUT = CodeLayout(
+    page_width_cm=21,
+    page_height_cm=29.7,
+    margin_top_cm=2.0,
+    margin_bottom_cm=2.0,
+    margin_left_cm=2.5,
+    margin_right_cm=2.0,
+    # python-docx 默认模板的 sectPr 记 w:header="720" twips，即 1.27cm，
+    # DOCX 侧沿用该默认值，PDF 侧据此换算页眉距页面上边缘的距离。
+    header_distance_cm=1.27,
+    body_font_size_pt=7.2,
+    body_line_pt=14,
+    header_font_size_pt=8,
+    header_line_pt=12,
+)
 
 EXCLUDE_DIRS = {
     ".git",

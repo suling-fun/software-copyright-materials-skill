@@ -13,7 +13,7 @@
 - 操作手册 PDF；页数以 PDF 实际页数为准；
 - 平台账号主体对应的身份证明材料已在账号中维护，或由用户准备好后续需要的复印件。
 
-正式材料由 `build_docx_from_md.py` 生成的是 Word，而平台只接受 PDF，须先执行转换：
+两份 PDF 通常已由主流程第 12 步生成，进入本流程前核对其存在且页数与申请表一致即可。代码鉴别材料由脚本直接渲染，不依赖办公套件；操作手册若因本机无 Microsoft Word 与 LibreOffice 而缺失，须由用户自行导出后再继续。若 `正式资料/` 下缺少 PDF，或 Word 在其后被修改过，则补执行：
 
 ```bash
 python3 ${SKILL_DIR}/scripts/convert_to_pdf.py --workdir 软件著作权申请资料

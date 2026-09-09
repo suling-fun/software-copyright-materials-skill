@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from common import ensure_dir, read_json, safe_filename
+from common import CODE_LAYOUT, ensure_dir, read_json, safe_filename
 
 try:
     from docx import Document
@@ -216,13 +216,14 @@ def configure_a4(document: Any) -> None:
 
 
 def configure_code_a4(document: Any) -> None:
+    # 数值一律取自 common.CODE_LAYOUT，与 render_code_pdf.py 共用同一来源。
     section = document.sections[0]
-    section.page_width = Cm(21)
-    section.page_height = Cm(29.7)
-    section.top_margin = Cm(2.0)
-    section.bottom_margin = Cm(2.0)
-    section.left_margin = Cm(2.5)
-    section.right_margin = Cm(2.0)
+    section.page_width = Cm(CODE_LAYOUT.page_width_cm)
+    section.page_height = Cm(CODE_LAYOUT.page_height_cm)
+    section.top_margin = Cm(CODE_LAYOUT.margin_top_cm)
+    section.bottom_margin = Cm(CODE_LAYOUT.margin_bottom_cm)
+    section.left_margin = Cm(CODE_LAYOUT.margin_left_cm)
+    section.right_margin = Cm(CODE_LAYOUT.margin_right_cm)
 
 
 def add_page_field(paragraph: Any) -> None:
@@ -241,7 +242,7 @@ def add_page_field(paragraph: Any) -> None:
     for element in (begin, instr, separate, result, end):
         run = paragraph.add_run()
         run._r.append(element)
-        set_run_font(run, "SimSun", 8)
+        set_run_font(run, "SimSun", CODE_LAYOUT.header_font_size_pt)
 
 
 def add_total_pages_field(paragraph: Any) -> None:
@@ -265,7 +266,7 @@ def add_total_pages_field(paragraph: Any) -> None:
     for element in (begin, instr, separate, result, end):
         run = paragraph.add_run()
         run._r.append(element)
-        set_run_font(run, "SimSun", 8)
+        set_run_font(run, "SimSun", CODE_LAYOUT.header_font_size_pt)
 
 
 def set_code_header(
@@ -287,28 +288,28 @@ def set_code_header(
     left_para.paragraph_format.space_before = Pt(0)
     left_para.paragraph_format.space_after = Pt(0)
     left_para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-    left_para.paragraph_format.line_spacing = Pt(12)
+    left_para.paragraph_format.line_spacing = Pt(CODE_LAYOUT.header_line_pt)
     left_run = left_para.add_run(f"{software_name} {version}")
-    set_run_font(left_run, "SimSun", 8)
+    set_run_font(left_run, "SimSun", CODE_LAYOUT.header_font_size_pt)
 
     right_para = right_cell.paragraphs[0]
     right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     right_para.paragraph_format.space_before = Pt(0)
     right_para.paragraph_format.space_after = Pt(0)
     right_para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-    right_para.paragraph_format.line_spacing = Pt(12)
+    right_para.paragraph_format.line_spacing = Pt(CODE_LAYOUT.header_line_pt)
     prefix = right_para.add_run("第 ")
-    set_run_font(prefix, "SimSun", 8)
+    set_run_font(prefix, "SimSun", CODE_LAYOUT.header_font_size_pt)
     add_page_field(right_para)
     if show_total_pages:
         # Operation manual only (see set_manual_header): "第 X 页 共 Y 页".
         # Code materials keep the plain "第 X 页" format via the default
         # show_total_pages=False, so this branch never touches their output.
         mid = right_para.add_run(" 页 共 ")
-        set_run_font(mid, "SimSun", 8)
+        set_run_font(mid, "SimSun", CODE_LAYOUT.header_font_size_pt)
         add_total_pages_field(right_para)
     suffix = right_para.add_run(" 页")
-    set_run_font(suffix, "SimSun", 8)
+    set_run_font(suffix, "SimSun", CODE_LAYOUT.header_font_size_pt)
 
     # Remove borders from the header table
     for cell in table.rows[0].cells:
@@ -415,7 +416,7 @@ def build_code_docx_python(md_path: Path, out_path: Path, software_name: str, ve
 
     document = Document()
     configure_code_a4(document)
-    set_normal_font(document, "Consolas", 7.2)
+    set_normal_font(document, "Consolas", CODE_LAYOUT.body_font_size_pt)
     set_style_black(document)
     set_code_header(document, software_name, version)
 
@@ -432,9 +433,9 @@ def build_code_docx_python(md_path: Path, out_path: Path, software_name: str, ve
             p.paragraph_format.space_before = Pt(0)
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-            p.paragraph_format.line_spacing = Pt(14)
+            p.paragraph_format.line_spacing = Pt(CODE_LAYOUT.body_line_pt)
             run = p.add_run(line if line else " ")
-            set_run_font(run, "Consolas", 7.2)
+            set_run_font(run, "Consolas", CODE_LAYOUT.body_font_size_pt)
         if index != len(pages) - 1:
             # 嵌入式分页符：避免 add_page_break() 产生多余空段落导致空白页
             run = p.add_run()
