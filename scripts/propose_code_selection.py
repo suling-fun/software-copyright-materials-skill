@@ -7,20 +7,20 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from common import COPYRIGHT_CODE_EXTS, FRONTEND_EXTS, ensure_dir, is_known_config_file, iter_project_files, read_json, rel, write_json
-from extract_code_material import LINES_PER_PAGE, SPLIT_THRESHOLD_PAGES, category_weight, classify_source_lines, should_skip_file
+from common import COPYRIGHT_CODE_EXTS, FRONTEND_EXTS, ensure_dir, is_known_config_file, iter_project_files, read_json, rel, strip_comments, write_json
+from extract_code_material import LINES_PER_PAGE, SPLIT_THRESHOLD_PAGES, category_weight, should_skip_file
 
 
 DEFAULT_MAX_FILES = 0
 
 
 def count_material_lines(text: str, suffix: str) -> int:
-    """Count the lines that would enter the code material: everything but blank-only lines.
+    """Count the lines that would enter the code material after comments and blanks are stripped.
 
-    与 extract_code_material.prepare_records 的保留口径一致：空行剔除，注释行与有效代码行
-    均计入材料行数。此处复用 classify_source_lines，避免候选清单与实际抽取出现两套口径。
+    与 extract_code_material.prepare_records 的保留口径一致：注释与空行一律剔除。此处复用
+    common.strip_comments，避免候选清单与实际抽取出现两套口径，候选不足的停止判定才不会高估页数。
     """
-    return sum(1 for kind in classify_source_lines(text, suffix) if kind != "blank")
+    return len(strip_comments(text, suffix).lines)
 
 
 def evidence_for(path: Path, project: Path) -> str:

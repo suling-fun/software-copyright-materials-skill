@@ -8,14 +8,31 @@ import math
 from pathlib import Path
 from typing import Any
 
-from common import COPYRIGHT_CODE_EXTS, FRONTEND_EXTS, ensure_dir, is_known_config_file, iter_project_files, looks_binary, read_json, read_text, rel, safe_filename, write_json
+from common import (
+    COPYRIGHT_CODE_EXTS,
+    FRONTEND_EXTS,
+    STRIP_MODE_LABELS,
+    STRIP_MODE_NONE,
+    STRIP_MODE_WHOLE_LINE,
+    classify_source_lines,
+    comment_syntax,
+    ensure_dir,
+    is_known_config_file,
+    iter_project_files,
+    looks_binary,
+    read_json,
+    read_text,
+    rel,
+    safe_filename,
+    strip_comments,
+    write_json,
+)
 
 
 LINES_PER_PAGE = 50
 SPLIT_THRESHOLD_PAGES = 60
 SEGMENT_PAGES = SPLIT_THRESHOLD_PAGES // 2
 REORDER_WINDOW = 30
-MIN_CODE_RATIO = 0.60
 # 降级切分（无法重排出 30+30 页时）允许的每段页数区间。
 # 超出该区间即视为材料不足，须回到代码文件选择环节调整抽取范围，不得径直输出。
 FALLBACK_MIN_SEGMENT_PAGES = 28
@@ -142,100 +159,26 @@ def marker_for(path: Path, project: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 注释与有效代码行的判定
+# 注释剔除与行数统计
+#
+# 剔除逻辑位于 common.strip_comments()，verify_materials.py 复用同一实现检测残留。
+# comment_syntax / classify_source_lines 自 common 导入后在本模块重新导出，
+# 保持既有的 `from extract_code_material import classify_source_lines` 可用。
 # ---------------------------------------------------------------------------
-
-C_STYLE_EXTS = {
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".java", ".c", ".h", ".cc",
-    ".cpp", ".hpp", ".cs", ".go", ".rs", ".swift", ".kt", ".kts", ".php",
-    ".dart", ".scss", ".sass", ".less",
-}
-CSS_STYLE_EXTS = {".css"}
-HASH_STYLE_EXTS = {".py", ".sh", ".bash", ".zsh", ".rb", ".yml", ".yaml", ".toml"}
-MARKUP_SCRIPT_EXTS = {".html", ".htm", ".vue", ".svelte", ".astro"}
-MARKUP_ONLY_EXTS = {".xml", ".svg"}
-SQL_STYLE_EXTS = {".sql"}
-
-
-def comment_syntax(suffix: str) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Return (line comment prefixes, block comment (open, close) pairs) for a suffix.
-
-    判定刻意保守：仅当整行 strip 后以注释符开头，或该行处于已开启的块注释之内，
-    才计为注释行。因此字符串字面量中出现的 `//` 不会被误判为注释。
-    """
-    suffix = suffix.lower()
-    if suffix in C_STYLE_EXTS or suffix in MARKUP_SCRIPT_EXTS:
-        prefixes: tuple[str, ...] = ("//",)
-        blocks: tuple[tuple[str, str], ...] = (("/*", "*/"),)
-        if suffix in MARKUP_SCRIPT_EXTS:
-            blocks = (("<!--", "-->"), ("/*", "*/"))
-        return prefixes, blocks
-    if suffix in CSS_STYLE_EXTS:
-        return (), (("/*", "*/"),)
-    if suffix in HASH_STYLE_EXTS:
-        return ("#",), ()
-    if suffix in MARKUP_ONLY_EXTS:
-        return (), (("<!--", "-->"),)
-    if suffix in SQL_STYLE_EXTS:
-        return ("--",), (("/*", "*/"),)
-    return (), ()
-
-
-def classify_source_lines(text: str, suffix: str) -> list[str]:
-    """Classify every source line as blank / comment / code."""
-    prefixes, blocks = comment_syntax(suffix)
-    kinds: list[str] = []
-    pending_close: str | None = None
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped:
-            kinds.append("blank")
-            continue
-        if pending_close is not None:
-            index = stripped.find(pending_close)
-            if index == -1:
-                kinds.append("comment")
-                continue
-            rest = stripped[index + len(pending_close):].strip()
-            pending_close = None
-            kinds.append("code" if rest else "comment")
-            continue
-        if any(stripped.startswith(prefix) for prefix in prefixes):
-            kinds.append("comment")
-            continue
-        matched = False
-        for opener, closer in blocks:
-            if not stripped.startswith(opener):
-                continue
-            matched = True
-            index = stripped.find(closer, len(opener))
-            if index == -1:
-                pending_close = closer
-                kinds.append("comment")
-            else:
-                rest = stripped[index + len(closer):].strip()
-                kinds.append("code" if rest else "comment")
-            break
-        if matched:
-            continue
-        kinds.append("code")
-    return kinds
 
 
 def empty_stats() -> dict[str, int]:
-    return {"code": 0, "comment": 0, "blank": 0, "marker": 0}
+    return {"code": 0, "marker": 0, "blank": 0, "stripped_comment": 0, "trimmed": 0}
 
 
 def stats_summary(stats: dict[str, int]) -> dict[str, Any]:
-    material = stats["code"] + stats["comment"] + stats["marker"]
     return {
         "code_line_count": stats["code"],
-        "comment_line_count": stats["comment"],
-        "blank_line_count": stats["blank"],
         "marker_line_count": stats["marker"],
-        "material_line_count": material,
-        "code_ratio": round(stats["code"] / material, 4) if material else 0.0,
-        "comment_ratio": round(stats["comment"] / material, 4) if material else 0.0,
+        "material_line_count": stats["code"] + stats["marker"],
+        "blank_line_count": stats["blank"],
+        "stripped_comment_line_count": stats["stripped_comment"],
+        "inline_comment_trimmed_line_count": stats["trimmed"],
     }
 
 
@@ -273,8 +216,11 @@ def load_selected_files(project: Path, selection_path: Path | None) -> list[dict
     return selected
 
 
-def prepare_records(project: Path, selection_path: Path | None, strip_comments: bool) -> list[dict[str, Any]]:
-    """Read every selected file once and keep its material lines plus line statistics."""
+def prepare_records(project: Path, selection_path: Path | None) -> list[dict[str, Any]]:
+    """Read every selected file once, strip all comments and keep the remaining code lines.
+
+    注释一律剔除（中国版权保护中心要求代码材料不含注释），空行一并剔除。
+    """
     selected_items = load_selected_files(project, selection_path)
     records: list[dict[str, Any]] = []
 
@@ -288,23 +234,8 @@ def prepare_records(project: Path, selection_path: Path | None, strip_comments: 
             continue
         text = read_text(path)
         source_lines = text.splitlines()
-        kinds = classify_source_lines(text, path.suffix.lower())
-
-        kept_lines: list[str] = []
-        kept_kinds: list[str] = []
-        counts = empty_stats()
-        for line, kind in zip(source_lines, kinds):
-            if kind == "blank":
-                counts["blank"] += 1
-                continue
-            if kind == "comment":
-                counts["comment"] += 1
-                if strip_comments:
-                    continue
-            else:
-                counts["code"] += 1
-            kept_lines.append(line)
-            kept_kinds.append(kind)
+        result = strip_comments(text, path.suffix.lower())
+        kept_lines = result.lines
         if not kept_lines:
             continue
 
@@ -312,15 +243,17 @@ def prepare_records(project: Path, selection_path: Path | None, strip_comments: 
             {
                 "path": rel(path, project),
                 "source_line_count": len(source_lines),
-                "blank_line_count": counts["blank"],
-                "comment_line_count": counts["comment"],
-                "code_line_count": counts["code"],
-                "stripped_comment_line_count": counts["comment"] if strip_comments else 0,
+                "blank_line_count": result.blank_line_count,
+                "code_line_count": len(kept_lines),
+                "stripped_comment_line_count": result.stripped_comment_line_count,
+                "inline_comment_trimmed_line_count": result.trimmed_line_count,
+                "comment_strip_mode": result.mode,
+                "comment_strip_note": result.note,
                 "selected_line_start": 1,
                 "selected_line_end": len(source_lines),
                 "selected_line_count": len(kept_lines),
                 "lines": kept_lines,
-                "kinds": kept_kinds,
+                "kinds": ["code"] * len(kept_lines),
             }
         )
     return records
@@ -576,10 +509,6 @@ def write_pages_md(path: Path, title: str, software_name: str, version: str, pag
     path.write_text("\n".join(chunks), encoding="utf-8")
 
 
-def percent(value: float) -> str:
-    return f"{value * 100:.1f}%"
-
-
 def write_manifest_md(path: Path, manifest: dict[str, Any]) -> None:
     overall = manifest["line_stats"]["selected_files"]
     rendered = manifest["line_stats"]["rendered_material"]
@@ -606,30 +535,51 @@ def write_manifest_md(path: Path, manifest: dict[str, Any]) -> None:
         f"- 页数对齐方式：{manifest['pagination_status']}",
         f"- 文件顺序：{manifest['order_status']}",
         "",
-        "## 行数构成统计",
+        "## 注释剔除说明",
         "",
-        "「全部选中文件」一行反映所选源码自身的行数构成，「实际输出材料」一行反映本次写入代码材料的行数构成；",
-        "占比的分母为该行的有效代码行、注释行与文件标记行之和。空行在抽取时已剔除，此处仅作计数。",
-        "",
-        "| 统计范围 | 有效代码行 | 注释行 | 文件标记行 | 材料行数 | 有效代码占比 | 注释占比 | 空行（已剔除） |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-        f"| 全部选中文件 | {overall['code_line_count']} | {overall['comment_line_count']} | "
-        f"{overall['marker_line_count']} | {overall['material_line_count']} | "
-        f"{percent(overall['code_ratio'])} | {percent(overall['comment_ratio'])} | {overall['blank_line_count']} |",
-        f"| 实际输出材料 | {rendered['code_line_count']} | {rendered['comment_line_count']} | "
-        f"{rendered['marker_line_count']} | {rendered['material_line_count']} | "
-        f"{percent(rendered['code_ratio'])} | {percent(rendered['comment_ratio'])} | — |",
+        "材料已剔除全部注释，行号与源码不逐行对应。逐行回溯须以「源码行范围」列所示的整文件范围为准。",
+        "剔除范围包括整行注释、行尾注释、跨行与行内块注释、JSX 注释、HTML/XML/Vue 模板注释与 Python 文档字符串；"
+        "剔除后变为空白的行一并删除。Shebang（#!）与 Python 编码声明行属解释器指令，予以保留。",
         "",
     ]
-    if manifest.get("comment_ratio_warning"):
-        lines.extend([f"> 提示：{manifest['comment_ratio_warning']}", ""])
-    if manifest.get("strip_comments"):
+    # 仅剔除整行注释的文件，以及后缀未识别、未作剔除的文件，均须提示人工复核。
+    whole_line_files = [
+        item
+        for item in manifest["files"]
+        if item.get("comment_strip_mode") == STRIP_MODE_WHOLE_LINE
+        or (item.get("comment_strip_mode") == STRIP_MODE_NONE and item.get("comment_strip_note"))
+    ]
+    if whole_line_files:
         lines.extend(
             [
-                "> 风险提示：本次抽取已剔除注释，材料行号不再与源码对应，逐行回溯须以「抽取源码范围」列所示的整文件范围为准。",
-                "",
+                f"> 注意：下列 {len(whole_line_files)} 个文件未能完整剔除注释（多为语言无法可靠逐字符解析，"
+                "标注「仅剔除整行注释」），行尾注释与行内块注释可能残留，须人工复核：",
+                ">",
             ]
         )
+        for item in whole_line_files:
+            note = item.get("comment_strip_note") or ""
+            lines.append(f"> - `{item['path']}`（{note}）" if note else f"> - `{item['path']}`")
+        lines.append("")
+    lines.extend(
+        [
+            "## 行数构成统计",
+            "",
+            "「全部选中文件」一行反映所选源码剔除注释与空行后的行数构成，「实际输出材料」一行反映本次写入代码材料的行数构成。",
+            "材料行数为有效代码行与文件标记行之和；已剔除注释行指整行均为注释、剔除后整行删除的行，"
+            "行尾注释已清理行指去掉行尾或行内注释后仍保留代码的行。",
+            "",
+            "| 统计范围 | 有效代码行 | 文件标记行 | 材料行数 | 已剔除注释行 | 行尾注释已清理行 | 空行（已剔除） |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            f"| 全部选中文件 | {overall['code_line_count']} | {overall['marker_line_count']} | "
+            f"{overall['material_line_count']} | {overall['stripped_comment_line_count']} | "
+            f"{overall['inline_comment_trimmed_line_count']} | {overall['blank_line_count']} |",
+            f"| 实际输出材料 | {rendered['code_line_count']} | {rendered['marker_line_count']} | "
+            f"{rendered['material_line_count']} | {rendered['stripped_comment_line_count']} | "
+            f"{rendered['inline_comment_trimmed_line_count']} | {rendered['blank_line_count']} |",
+            "",
+        ]
+    )
     if manifest.get("pagination_warning"):
         lines.extend([f"> 页数告警：{manifest['pagination_warning']}", ""])
     lines.extend(
@@ -642,8 +592,8 @@ def write_manifest_md(path: Path, manifest: dict[str, Any]) -> None:
             "「交付行范围」与「交付页码」以代码材料文档自身计数，即抽查时可直接定位的位置。",
             "两者对前段一致，对后段相差一个中段长度。未收录文件不进入交付文档，其交付坐标标注为「未收录」。",
             "",
-            "| 序号 | 文件 | 所属段落 | 源码行数 | 抽取源码范围 | 抽取行数 | 有效代码行 | 注释行 | 空行 | 整装行范围 | 交付行范围 | 交付页码 |",
-            "| ---: | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
+            "| 序号 | 文件 | 所属段落 | 源码行数 | 源码行范围 | 抽取行数 | 已剔除注释行 | 空行 | 注释剔除方式 | 整装行范围 | 交付行范围 | 交付页码 |",
+            "| ---: | --- | --- | ---: | --- | ---: | ---: | ---: | --- | --- | --- | --- |",
         ]
     )
     for order, item in enumerate(manifest["files"], start=1):
@@ -659,8 +609,8 @@ def write_manifest_md(path: Path, manifest: dict[str, Any]) -> None:
         lines.append(
             f"| {order} | `{item['path']}` | {item['segment']} | {item['source_line_count']} | "
             f"{item['selected_line_start']}-{item['selected_line_end']} | "
-            f"{item['selected_line_count']} | {item['code_line_count']} | "
-            f"{item['comment_line_count']} | {item['blank_line_count']} | "
+            f"{item['selected_line_count']} | {item['stripped_comment_line_count']} | "
+            f"{item['blank_line_count']} | {STRIP_MODE_LABELS.get(item.get('comment_strip_mode'), '未知')} | "
             f"{item['material_line_start']}-{item['material_line_end']} | "
             f"{rendered_range} | {page_range} |"
         )
@@ -682,10 +632,9 @@ def extract(
     version: str,
     lines_per_page: int,
     selection_path: Path | None,
-    strip_comments: bool = False,
 ) -> dict[str, Any]:
     ensure_dir(out_dir)
-    records = prepare_records(project, selection_path, strip_comments)
+    records = prepare_records(project, selection_path)
     if not records:
         raise SystemExit("No selected frontend source code files found for extraction.")
 
@@ -822,20 +771,26 @@ def extract(
     overall_stats = empty_stats()
     for item in files:
         overall_stats["code"] += item["code_line_count"]
-        overall_stats["comment"] += item["comment_line_count"]
         overall_stats["blank"] += item["blank_line_count"]
+        overall_stats["stripped_comment"] += item["stripped_comment_line_count"]
+        overall_stats["trimmed"] += item["inline_comment_trimmed_line_count"]
         overall_stats["marker"] += 1
     overall_summary = stats_summary(overall_stats)
-    overall_summary["stripped_comment_line_count"] = sum(item["stripped_comment_line_count"] for item in files)
+    # 有效代码行与文件标记行按交付材料的实际行序列计数；剔除类计数为文件级数据，
+    # 前后段均以完整文件边界切分，故按进入交付文档的文件求和即可。
+    for item in files:
+        if item.get("rendered"):
+            rendered_stats["blank"] += item["blank_line_count"]
+            rendered_stats["stripped_comment"] += item["stripped_comment_line_count"]
+            rendered_stats["trimmed"] += item["inline_comment_trimmed_line_count"]
     rendered_summary = stats_summary(rendered_stats)
 
-    comment_ratio_warning: str | None = None
-    if rendered_summary["code_ratio"] < MIN_CODE_RATIO:
-        comment_ratio_warning = (
-            f"注释占比偏高（有效代码行占比 {percent(rendered_summary['code_ratio'])}，"
-            f"低于 {percent(MIN_CODE_RATIO)}），可考虑在 代码文件选择.json 中改选注释密度较低的核心源码，或增加抽取文件。"
+    whole_line_only = [item["path"] for item in files if item["comment_strip_mode"] == STRIP_MODE_WHOLE_LINE]
+    if whole_line_only:
+        preview = "、".join(whole_line_only[:5]) + (" 等" if len(whole_line_only) > 5 else "")
+        warnings.append(
+            f"{len(whole_line_only)} 个文件仅剔除整行注释（{preview}），行尾注释与行内块注释可能残留，须人工复核。"
         )
-        warnings.append(comment_ratio_warning)
 
     new_order = [record["path"] for record in records]
     order_status = "与 代码文件选择.json 一致" if new_order == original_order else "已为页数对齐重排，下表顺序为准"
@@ -888,8 +843,10 @@ def extract(
         "order_status": order_status,
         "file_order_changed": new_order != original_order,
         "original_file_order": original_order,
-        "strip_comments": strip_comments,
-        "comment_ratio_warning": comment_ratio_warning,
+        # 注释一律剔除，材料行号与源码不逐行对应；保留 strip_comments 键供旧读取方兼容。
+        "comments_stripped": True,
+        "strip_comments": True,
+        "whole_line_only_strip_files": whole_line_only,
         "line_stats": {
             "selected_files": overall_summary,
             "rendered_material": rendered_summary,
@@ -917,12 +874,11 @@ def main() -> None:
     parser.add_argument(
         "--strip-comments",
         action="store_true",
-        help=(
-            "剔除整行注释后再分页（默认关闭）。风险：注释是源程序的组成部分，剔除后材料行号不再与源码对应，"
-            "逐行回溯只能以整文件范围为准，仅在特殊情形下使用。"
-        ),
+        help="已弃用，无任何作用：注释现已始终剔除。保留该参数仅为兼容旧命令。",
     )
     args = parser.parse_args()
+    if args.strip_comments:
+        print("NOTE --strip-comments 已弃用：注释现已始终剔除，该参数不再产生任何作用")
 
     project = Path(args.project)
     if not project.exists():
@@ -941,7 +897,6 @@ def main() -> None:
         args.version,
         args.lines_per_page,
         selection,
-        strip_comments=args.strip_comments,
     )
     rendered = manifest["line_stats"]["rendered_material"]
     print(f"OK code drafts: {args.out_dir}")
@@ -958,12 +913,12 @@ def main() -> None:
     print(f"File order: {manifest['order_status']}")
     print(
         "Line stats (rendered): "
-        f"code {rendered['code_line_count']} ({percent(rendered['code_ratio'])}), "
-        f"comment {rendered['comment_line_count']} ({percent(rendered['comment_ratio'])}), "
-        f"marker {rendered['marker_line_count']}, total {rendered['material_line_count']}"
+        f"code {rendered['code_line_count']}, marker {rendered['marker_line_count']}, "
+        f"total {rendered['material_line_count']}; "
+        f"stripped comment lines {rendered['stripped_comment_line_count']}, "
+        f"inline comments trimmed {rendered['inline_comment_trimmed_line_count']}"
     )
-    if manifest["strip_comments"]:
-        print("WARN 已剔除注释，材料行号不再与源码对应")
+    print("NOTE 材料已剔除全部注释，行号与源码不逐行对应")
     for warning in manifest["warnings"]:
         print(f"WARN {warning}")
     print(f"Outputs: {', '.join(manifest['outputs'])}")

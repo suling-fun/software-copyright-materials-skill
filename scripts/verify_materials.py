@@ -28,13 +28,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import re
 import sys
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from common import read_json, read_text
+from common import STRIP_MODE_LABELS, STRIP_MODE_FULL, read_json, read_text, strip_comments
 
 try:
     # Reuse the exact 有效字符数 (whitespace/newline-stripped length) algorithm
@@ -903,6 +904,91 @@ def check_gates(workdir: Path) -> None:
             record(sub_check, "FAIL", f"{path} 存在，但 {key} 字段为 {value!r}（缺失或未确认），说明该确认点未被真正记录")
 
 
+# 代码材料中分隔文件的标记行，由 extract_code_material.assemble() 写入。
+CODE_FILE_MARKER_RE = re.compile(r"^// File: (.+?)\s*$")
+# 残留注释在报告中列出的位置数上限。
+COMMENT_RESIDUE_PREVIEW = 5
+
+
+def docx_paragraph_texts(docx_path: Path) -> list[str] | None:
+    """Return one string per body paragraph; code materials hold one source line per paragraph."""
+    if DOCX_AVAILABLE:
+        try:
+            return [p.text for p in Document(str(docx_path)).paragraphs]
+        except Exception:
+            pass
+    try:
+        with zipfile.ZipFile(docx_path) as zf:
+            xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    paragraphs = re.findall(r"<w:p[ >].*?</w:p>", xml, flags=re.S)
+    return [html.unescape("".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", p))) for p in paragraphs]
+
+
+def check_code_comment_residue(code_docx: Path | None) -> None:
+    """Re-run common.strip_comments() on every file block in the code material.
+
+    剔除函数满足幂等：对已剔除的文本再执行一次不应产生任何改动，产生改动即说明仍有
+    注释残留。按 `// File: <路径>` 标记行切分文件，依各文件后缀选择注释语法。
+    """
+    check_name = "9. 代码材料注释残留"
+    if code_docx is None:
+        record(check_name, "WARN", "代码材料 docx 缺失（已在文件完整性检查中报告），跳过注释残留检测")
+        return
+    paragraphs = docx_paragraph_texts(code_docx)
+    if paragraphs is None:
+        record(check_name, "WARN", f"未能读取 {code_docx.name} 的正文段落，跳过注释残留检测")
+        return
+
+    blocks: list[tuple[str, int, list[str]]] = []  # (文件路径, 标记行在材料中的行号, 代码行)
+    for number, text in enumerate(paragraphs, start=1):
+        marker = CODE_FILE_MARKER_RE.match(text)
+        if marker:
+            blocks.append((marker.group(1), number, []))
+        elif blocks:
+            blocks[-1][2].append(text)
+    if not blocks:
+        record(check_name, "WARN", f"{code_docx.name} 中未找到 `// File: <路径>` 文件标记行，无法按语言判定注释，跳过注释残留检测")
+        return
+
+    residues: list[str] = []
+    residue_files: set[str] = set()
+    partial: list[str] = []
+    for path_text, marker_line, code_lines in blocks:
+        suffix = Path(path_text).suffix.lower()
+        result = strip_comments("\n".join(code_lines), suffix)
+        if result.mode != STRIP_MODE_FULL and result.note:
+            partial.append(f"{path_text}（{STRIP_MODE_LABELS.get(result.mode, result.mode)}）")
+        for line_no in result.changed_line_numbers:
+            residue_files.add(path_text)
+            snippet = code_lines[line_no - 1].strip() if line_no - 1 < len(code_lines) else ""
+            if len(snippet) > 60:
+                snippet = snippet[:60] + "…"
+            residues.append(f"材料第 {marker_line + line_no} 行（{path_text} 段内第 {line_no} 行）：{snippet!r}")
+
+    partial_note = ""
+    if partial:
+        partial_note = (
+            f"另有 {len(partial)} 个文件的语言仅支持整行注释判定，行尾与行内注释无法程序化复检，"
+            f"须人工复核：{'、'.join(partial[:COMMENT_RESIDUE_PREVIEW])}{' 等' if len(partial) > COMMENT_RESIDUE_PREVIEW else ''}"
+        )
+    if residues:
+        preview = "；".join(residues[:COMMENT_RESIDUE_PREVIEW])
+        more = f"，其余 {len(residues) - COMMENT_RESIDUE_PREVIEW} 处略" if len(residues) > COMMENT_RESIDUE_PREVIEW else ""
+        record(
+            check_name,
+            "FAIL",
+            f"{code_docx.name} 共 {len(blocks)} 个文件段，其中 {len(residue_files)} 个残留注释，共 {len(residues)} 行：{preview}{more}。"
+            "代码材料须不含注释，须以当前版本的 extract_code_material.py 重新抽取并重新生成正式资料"
+            + (f"。{partial_note}" if partial_note else ""),
+        )
+    elif partial:
+        record(check_name, "WARN", f"{code_docx.name} 共 {len(blocks)} 个文件段，未检出注释残留。{partial_note}")
+    else:
+        record(check_name, "PASS", f"{code_docx.name} 共 {len(blocks)} 个文件段，未检出注释残留")
+
+
 # ---------------------------------------------------------------------------
 # Report rendering
 
@@ -945,6 +1031,7 @@ def main() -> int:
     check_screenshot_dimensions(manual_docx)
     check_field_lengths(app_fields)
     check_gates(workdir)
+    check_code_comment_residue(code_docx)
 
     report_text, counts = render_report()
     print(report_text)
